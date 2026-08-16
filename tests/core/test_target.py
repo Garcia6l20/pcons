@@ -1125,3 +1125,57 @@ class TestUnknownUsageRequirements:
         with pytest.raises(AttributeError, match="link_dirs"):
             target.private.lib_dirs.append("/opt/lib")
         assert project is not None
+
+
+class TestTargetEnvSubdir:
+    """_env_subdir is what keeps a build_for() copy apart from its source."""
+
+    def test_absent_by_default(self, test_project):
+        target = Target("common")
+        assert target._env_subdir is None
+        assert target.qualified_name == "test_project::common"
+        assert target.build_dir == Path("build")
+
+    def test_moves_build_dir_and_qualified_name(self, test_project):
+        target = Target("common", env_subdir="host")
+
+        assert target.qualified_name == "test_project::common@host"
+        assert target.build_dir == Path("build/host")
+
+    def test_env_subdir_sits_below_the_subproject_offset(self, test_project):
+        with test_project._enter_subdir("lib"):
+            target = Target("common", env_subdir="host")
+
+        assert target.build_dir == Path("build/lib/host")
+
+    def test_same_name_different_env_coexist(self, test_project):
+        native = Target("common")
+        host = Target("common", env_subdir="host")
+
+        assert native != host
+        assert hash(native) != hash(host)
+        assert test_project.targets == [native, host]
+
+    def test_duplicate_name_and_env_raises(self, test_project):
+        Target("common", env_subdir="host")
+        with pytest.raises(ValueError, match="for environment 'host' already"):
+            Target("common", env_subdir="host")
+
+    def test_duplicate_name_still_raises(self, test_project):
+        Target("common")
+        with pytest.raises(ValueError, match="already exists"):
+            Target("common")
+
+    def test_lookup_by_name_prefers_the_source_target(self, test_project):
+        native = Target("common")
+        host = Target("common", env_subdir="host")
+
+        assert test_project.get_target("common") is native
+        assert test_project.get_target("common@host") is host
+        assert test_project.get_target("test_project::common@host") is host
+
+    def test_lookup_finds_a_variant_when_nothing_else_matches(self, test_project):
+        host = Target("common", env_subdir="host")
+
+        assert test_project.get_target("common") is host
+        assert test_project.get_target("common@other", raise_if_missing=False) is None

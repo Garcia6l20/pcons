@@ -503,18 +503,38 @@ class Project(_ProjectBuilders):
         """Register a target; called only by Target.__init__.
 
         Raises:
-            ValueError: If a target with the same name already exists.
+            ValueError: If a target with the same qualified name already
+                exists. A build_for() copy shares its source's name and
+                differs by environment, so the check cannot be on the name.
         """
-        if (
-            existing := self.get_target(
-                target.name, raise_if_missing=False, recursive=False
-            )
-        ) is not None:
-            raise ValueError(
-                f"Target '{target.name}' already exists "
-                f"(defined at {existing.defined_at})"
-            )
+        for existing in self._targets:
+            if existing.qualified_name == target.qualified_name:
+                where = (
+                    f" for environment '{target._env_subdir}'"
+                    if target._env_subdir
+                    else ""
+                )
+                raise ValueError(
+                    f"Target '{target.name}'{where} already exists "
+                    f"(defined at {existing.defined_at})"
+                )
         self._targets.append(target)
+
+    def _find_local_target(self, name: str) -> Target | None:
+        """Find a target of this project by name, or "name@environment"."""
+        base, _, env_subdir = name.partition("@")
+        fallback: Target | None = None
+        for target in self._targets:
+            if target.name != base:
+                continue
+            if env_subdir:
+                if target._env_subdir == env_subdir:
+                    return target
+                continue
+            if target._env_subdir is None:
+                return target
+            fallback = fallback or target
+        return fallback
 
     @overload
     def get_target(
@@ -538,17 +558,13 @@ class Project(_ProjectBuilders):
         project, target_name = split_qualified_name(name)
         if project is not None:
             if project == self.name:
-                for target in self._targets:
-                    if target.name == target_name:
-                        return target
-                else:
-                    if raise_if_missing:
-                        raise KeyError(f"Target '{name}' not found")
-                    return None
-        else:
-            for target in self._targets:
-                if target.name == target_name:
-                    return target
+                if (found := self._find_local_target(target_name)) is not None:
+                    return found
+                if raise_if_missing:
+                    raise KeyError(f"Target '{name}' not found")
+                return None
+        elif (found := self._find_local_target(target_name)) is not None:
+            return found
 
         if recursive:
             targets_found = []

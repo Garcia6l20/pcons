@@ -471,6 +471,9 @@ class Target:
         # on targets with thousands of sources.
         "_source_set",
         "_subdir",
+        # Build subdirectory of the environment this target was built for,
+        # set only on a target produced by build_for().
+        "_env_subdir",
         # Utility targets (lupdate, doc generation, ...) set this False:
         # excluded from 'all' and implicit defaults, built only when
         # requested by name/alias or listed in Default().
@@ -484,8 +487,14 @@ class Target:
         target_type: str | None = None,
         builder: Builder | None = None,
         defined_at: SourceLocation | None = None,
+        env_subdir: str | None = None,
     ) -> None:
-        """Create a target. Toolchains define their own target_type strings."""
+        """Create a target. Toolchains define their own target_type strings.
+
+        ``env_subdir`` names the build subdirectory this target's outputs go
+        to, and is part of its identity: it is how a ``build_for()`` copy
+        keeps its source target's name without colliding with it.
+        """
         _validate_target_name(name)
         self.name = name
         self.builder = builder
@@ -525,6 +534,7 @@ class Target:
         # Sources that compile with an environment other than the target's
         # (add_sources(..., env=...)), keyed by source node path.
         self._source_envs: dict[Path, Environment] = {}
+        self._env_subdir = env_subdir
 
         from pcons.core.project import Project
 
@@ -548,7 +558,13 @@ class Target:
 
     @property
     def qualified_name(self) -> str:
-        """The qualified name, "<project>::<target>"."""
+        """The qualified name, "<project>::<target>".
+
+        A build_for() copy shares its source target's name, so its identity
+        carries the environment it was built for: "<project>::<target>@<env>".
+        """
+        if self._env_subdir:
+            return f"{self.project.name}::{self.name}@{self._env_subdir}"
         return f"{self.project.name}::{self.name}"
 
     @property
@@ -595,11 +611,16 @@ class Target:
         ``_subdir`` is the offset from the top-level root, so these anchor
         there rather than at the owning project's own directories (which
         already include that offset).
+
+        A build_for() copy adds its environment's subdirectory *below* the
+        subproject offset, so a subproject's artifacts stay grouped under the
+        subproject: ``build/<subproject>/<env>/``.
         """
         from pcons.core.project import Project
 
         top = Project.top_level()
-        return top.build_dir / self._subdir if self._subdir.parts else top.build_dir
+        base = top.build_dir / self._subdir if self._subdir.parts else top.build_dir
+        return base / self._env_subdir if self._env_subdir else base
 
     @property
     def source_dir(self) -> Path:
