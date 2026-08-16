@@ -413,7 +413,9 @@ class Project(_ProjectBuilders):
                 looked up in the toolchain registry: a finder name like "c"
                 auto-detects, a specific alias like "gcc" requires that
                 toolchain. A sequence of names is a preference list.
-            name: Optional name for this environment (used in ninja rule names).
+            name: Optional name for this environment. It is the build
+                subdirectory a ``Target.build_for()`` copy writes to, so it
+                must be a single path segment.
             **kwargs: Additional variables to set on the environment.
 
         Returns:

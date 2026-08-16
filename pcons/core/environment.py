@@ -78,6 +78,37 @@ def _first_repr(value: Any) -> str:
     return repr(items[0]) if items else '"..."'
 
 
+_INVALID_ENV_NAME_RE = re.compile(r"[^\w.+-]")
+
+
+def _read_only_message(name: str) -> str:
+    """Explain why an Environment property cannot be assigned."""
+    message = f"Environment.{name} is read-only."
+    if name == "name":
+        message += (
+            " The name is the build subdirectory a build_for() copy writes to, "
+            'so it is fixed at creation: project.Environment(..., name="host").'
+        )
+    return message
+
+
+def _validate_env_name(name: str) -> None:
+    """Raise unless the name works as a single build subdirectory."""
+    if not name:
+        raise ValueError("Environment name must not be empty.")
+    if name in (".", ".."):
+        raise ValueError(f"Environment name {name!r} is not a usable directory name.")
+    bad = set(_INVALID_ENV_NAME_RE.findall(name))
+    if bad:
+        raise ValueError(
+            f"Environment name {name!r} contains invalid characters: "
+            f"{''.join(sorted(bad))!r}. The name is the build subdirectory a "
+            f"build_for() copy writes to, so it may contain letters, digits, "
+            f"underscores, dots, plus signs and hyphens -- one path segment, "
+            f"no separators."
+        )
+
+
 class Environment(_EnvironmentStubs):
     """Build environment with namespaced tool configuration.
 
@@ -129,7 +160,9 @@ class Environment(_EnvironmentStubs):
         """Create an environment.
 
         Args:
-            name: Optional name for this environment (used in ninja rule names).
+            name: Optional name for this environment. It is the build
+                subdirectory a ``Target.build_for()`` copy writes to, so it
+                must be a single path segment.
             toolchain: Optional toolchain to initialize tools from. A string
                 is looked up in the toolchain registry: a finder name like
                 "c" auto-detects, a specific alias like "gcc" requires that
@@ -164,6 +197,8 @@ class Environment(_EnvironmentStubs):
         self._use_origins: dict[tuple[str, str], tuple[str, str]] = {}
         # Active only inside a set_*/apply_* fan-out (see _dedup_fanout)
         self._fanout_seen: set[Any] | None = None
+        if name is not None:
+            _validate_env_name(name)
         self._name = name
         self.defined_at = defined_at or get_caller_location()
 
@@ -249,6 +284,8 @@ class Environment(_EnvironmentStubs):
         """Set a cross-tool variable or replace a tool config."""
         if name.startswith("_") or name == "defined_at":
             object.__setattr__(self, name, value)
+        elif isinstance(getattr(type(self), name, None), property):
+            raise AttributeError(_read_only_message(name))
         elif isinstance(value, ToolConfig):
             tools = self._get_tools()
             tools[name] = value
@@ -366,13 +403,22 @@ class Environment(_EnvironmentStubs):
 
     @property
     def name(self) -> str | None:
-        """Return the environment name, if set."""
+        """Return the environment name, if set.
+
+        Read-only: the name is the build subdirectory a ``build_for()`` copy
+        writes to, so it is fixed when the environment is created.
+        """
         return object.__getattribute__(self, "_name")
 
-    @name.setter
-    def name(self, value: str | None) -> None:
-        """Set the environment name."""
-        object.__setattr__(self, "_name", value)
+    @property
+    def build_subdir(self) -> Path | None:
+        """Build subdirectory for this environment, or None if unnamed.
+
+        ``Target.build_for(env)`` writes its copy's outputs under this
+        directory, so an unnamed environment cannot be a build_for() target.
+        """
+        name = object.__getattribute__(self, "_name")
+        return Path(name) if name else None
 
     def get(self, name: str, default: Any = None) -> Any:
         """Get a variable or tool with a default."""

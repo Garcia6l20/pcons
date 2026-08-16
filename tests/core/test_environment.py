@@ -122,8 +122,8 @@ class TestEnvironmentClone:
 class TestEnvironmentSubst:
     def test_subst_cross_tool_var(self, test_project):  # noqa: F811
         env = Environment()
-        env.name = "myapp"
-        result = env.subst("Building $name")
+        env.appname = "myapp"
+        result = env.subst("Building $appname")
         assert result == "Building myapp"
 
     def test_subst_tool_var(self, test_project):  # noqa: F811
@@ -534,3 +534,51 @@ class TestUseUnifiedWithRequirements:
 
         with pytest.raises(ValueError, match="target.link"):
             env.use(Duck())
+
+
+class TestEnvironmentName:
+    def test_named_env_has_build_subdir(self, test_project):  # noqa: F811
+        env = Environment(name="host")
+        assert env.name == "host"
+        assert env.build_subdir == Path("host")
+
+    def test_unnamed_env_has_no_build_subdir(self, test_project):  # noqa: F811
+        assert Environment().build_subdir is None
+
+    def test_clone_drops_the_name(self, test_project):  # noqa: F811
+        clone = Environment(name="host").clone()
+        assert clone.name is None
+        assert clone.build_subdir is None
+
+    def test_name_is_read_only(self, test_project):  # noqa: F811
+        env = Environment(name="host")
+        with pytest.raises(AttributeError, match="read-only"):
+            env.name = "other"  # ty: ignore[invalid-assignment]
+        assert env.name == "host"
+
+    def test_read_only_property_is_not_stored_as_a_variable(
+        self,
+        test_project,  # noqa: F811
+    ) -> None:
+        env = Environment()
+        with pytest.raises(AttributeError):
+            env.toolchains = []  # ty: ignore[invalid-assignment]
+
+    @pytest.mark.parametrize(
+        ("name", "match"),
+        [
+            ("", "must not be empty"),
+            (".", "usable directory name"),
+            ("..", "usable directory name"),
+            ("host/gcc", "invalid characters"),
+            ("host gcc", "invalid characters"),
+            ("host:gcc", "invalid characters"),
+        ],
+    )
+    def test_rejects_unusable_names(self, name, match, test_project):  # noqa: F811
+        with pytest.raises(ValueError, match=match):
+            Environment(name=name)
+
+    def test_project_factory_validates(self, test_project):  # noqa: F811
+        with pytest.raises(ValueError, match="invalid characters"):
+            test_project.Environment(name="host gcc")
