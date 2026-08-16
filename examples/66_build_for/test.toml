@@ -1,0 +1,28 @@
+# Test configuration for the build_for example
+
+[test]
+description = "Demonstrates target.build_for(): one library built for two environments"
+
+expected_outputs = [
+    "build/libgreeting.a",
+    "build/alt/libgreeting.a",
+    "build/app",
+    "build/app_alt",
+]
+
+[verify]
+# One source file, two libraries, two different results: the define comes from
+# each environment, and DEFAULT_BUILD from a line written after build_for().
+commands = [
+    { run = "./build/app", expect_stdout = "hello from the default build" },
+    { run = "./build/app_alt", expect_stdout = "hello from the alt build" },
+]
+
+commands_windows = [
+    { run = "build\\app.exe", expect_stdout = "hello from the default build" },
+    { run = "build\\app_alt.exe", expect_stdout = "hello from the alt build" },
+]
+
+[skip]
+# Xcode builds to different paths
+generators = ["xcode"]

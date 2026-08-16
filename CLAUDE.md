@@ -108,6 +108,7 @@ pcons/
 | Add/change a preset (variant, feature, cross target) | `pcons/core/preset.py` (the `Preset`/`ToolContribution` model), `make_*_preset()` / `_*_contributions()` in `pcons/toolchains/`, factories in `pcons/toolchains/presets.py` |
 | Qt support (find_qt, automoc, QML, i18n, deploy) | `pcons/toolchains/qt/` (finder, toolchain, scan, builders, qml, translations, deploy), docs in `docs/qt.md` |
 | Trace where a flag came from | `pcons/core/explain.py` (`env.explain()` / `env.cc.explain()`) |
+| Build one target for several environments | `pcons/core/target.py` (`build_for`, `copy_target_contents`, `rebind_derived_dependencies`), `pcons/core/resolver.py` (`_rebind_derived_targets`) |
 | Package management | `pcons/packages/finders/`, `pcons/packages/imported.py` |
 
 ## Testing

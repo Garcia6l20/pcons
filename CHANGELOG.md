@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`target.build_for(env)`** builds one target again with another
+  environment, for code shared between two builds — a library used by both a
+  firmware and a host-side tool, say. It returns an ordinary `Target`, so
+  linking, installing and `Default()` work on it unchanged, and its outputs go
+  under the environment's name (`build/host/libcommon.a`). The copy is taken
+  at the call, so a line written before it is shared and one written after
+  belongs to the original alone. Environment settings are never copied: a
+  cross environment's `-mcpu=` cannot follow the copy into a host build. A
+  copied dependency is retargeted at the copy's environment, and refused when
+  it has no counterpart there. See `examples/66_build_for`.
 - **`pcons explain`** shows how each target's commands are constructed and
   where every piece came from: the concrete command line for every built
   file, the target's effective usage requirements with the target that

@@ -653,6 +653,41 @@ libbar = env.StaticLibrary("bar", bar_sources, public_link_libs=[libfoo])
 app = env.Program("app", ["main.cpp"], link_libs=[libbar])
 ```
 
+### One Target, Several Environments
+> **Status: Implemented**
+
+A Target is bound to one Environment. Code shared between two builds — a library used by a firmware
+and by a host-side tool — is declared once and built again with `target.build_for(env)`.
+
+The result is an ordinary single-environment Target. Nothing downstream learns a new type: the
+resolver, the generators, the requirements machinery and every builder go on seeing what they see
+today. Three things make that work.
+
+**Identity carries the environment.** The copy keeps its source's name, so `Target.qualified_name`
+gains the environment's build subdirectory (`proj::common@host`) and the project registry checks
+qualified names rather than names. Without this the copy and its source would be one object to
+`Target.__hash__`, and so to every visited set, the topological sort and the cycle check.
+
+**Paths carry it too.** `Target.build_dir` appends the environment's subdirectory, below the
+subproject offset (`build/<subproject>/<env>/`). Every compile and link output path already derives
+from `build_dir`, so object directories and artifacts separate with no change in the factories.
+That subdirectory is `Environment.name`, which is why a named environment is required: it is the
+only thing keeping two builds of one name apart.
+
+**Content is copied at the call; dependencies are retargeted at resolve.** The copy takes the source
+target's sources, usage requirements and dependencies when `build_for()` runs, so a line written
+before the call is shared and one written after belongs to the original alone — copying at resolve
+time instead would leave no way to express the second. Environment-level settings are structurally
+excluded: cross-preset flags become `ToolContribution`s on `env.cc`/`env.cxx`/`env.link`, and
+effective requirements exclude `env.<tool>.flags`, so `-mcpu=cortex-m3` cannot ride along in a copy
+of `public`/`private`. Dependencies are the exception to verbatim copying — each copied Target
+dependency is replaced by that dependency's own copy for the new environment, refused when there is
+none. That runs from the resolver's prologue so `build_for()` calls need no ordering among
+themselves.
+
+Selection is explicit: a consumer links the target it was handed, and pcons never matches a variant
+to an environment on its own. The variable in the build script is the disambiguator.
+
 ### Target Resolution and Lazy Node Creation
 > **Status: Implemented**
 

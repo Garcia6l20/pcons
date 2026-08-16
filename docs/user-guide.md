@@ -516,6 +516,60 @@ app.link_private(lib)
 | `SharedLibrary()` | .so / .dylib / .dll | Plugins, shared code |
 | `HeaderOnlyLibrary()` | None | Template libraries |
 
+#### Building One Target for Several Environments
+
+A target belongs to one environment. When the same code has to be built more than once — a library shared between firmware and a host-side test, a helper needed by both a cross build and a build tool that runs on the build machine — `target.build_for(env)` declares it once and builds it again:
+
+```python
+mcu = project.Environment(toolchain="gcc", name="mcu")
+host = project.Environment(toolchain="gcc")
+
+common = project.StaticLibrary("common", mcu, sources=["src/common.c"])
+common_host = common.build_for(host)
+```
+
+`build_for()` returns an ordinary `Target`, so everything else works on it unchanged: link it, install it, list it in `Default()`. Its outputs go under the environment's name, which is why that environment needs one:
+
+```
+build/mcu/libcommon.a       # if mcu had no name, this would be build/libcommon.a
+build/libcommon.a           # host is unnamed, so its build stays at the root
+```
+
+An environment name must be a single path segment. At most one of the environments involved may be unnamed; two unnamed ones would write over each other, and `build_for()` refuses an unnamed environment outright.
+
+**Where a line sits decides which build gets it.** The copy is taken when `build_for()` is called:
+
+```python
+common = project.StaticLibrary("common", mcu, sources=["src/common.c"])
+common.public.include_dirs.append(src)              # both builds
+
+common_host = common.build_for(host)
+
+common.private.compile_flags.append("-ffreestanding")   # mcu build only
+common_host.public.defines.append("HOSTED=1")           # host build only
+```
+
+Environment settings are never copied. The compiler command, `env.cc.flags`, `env.cc.defines` and `env.cc.includes` belong to the environment each target is bound to, so a cross environment's `-mcpu=cortex-m3` cannot follow the copy into a host build. Only what was written on the target is copied.
+
+Selecting a build is explicit — there is no matching by environment. Link the one you mean:
+
+```python
+firmware.link(common)        # the mcu build
+host_test.link(common_host)  # the host build
+```
+
+A dependency is the one thing pcons retargets for you. If `common` links `core`, the copy links `core`'s counterpart for its own environment, and pcons refuses the build if there is none rather than linking a cross-compiled archive into a host program:
+
+```python
+core = project.StaticLibrary("core", mcu, sources=["src/core.c"])
+common.link(core)
+
+core_host = core.build_for(host)      # in either order
+common_host = common.build_for(host)  # links core_host, not core
+```
+
+See `examples/66_build_for` for a runnable version.
+
 ### Nodes
 
 Nodes represent files in the dependency graph. Use `project.node()` to get or create a node:
