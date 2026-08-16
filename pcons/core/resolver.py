@@ -32,6 +32,7 @@ from pcons.core.errors import DependencyCycleError
 from pcons.core.graph import topological_sort_targets
 from pcons.core.node import FileNode, Node
 from pcons.core.subst import TargetPath
+from pcons.core.target import rebind_derived_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,8 @@ class Resolver:
         trace("resolve", "Starting resolution phase")
         trace_value("resolve", "total_targets", len(self.project.targets))
 
+        self._rebind_derived_targets()
+
         for target in self._targets_in_build_order():
             if not target._resolved:
                 self._resolve_target(target)
@@ -231,6 +234,16 @@ class Resolver:
     def _targets_in_build_order(self) -> list[Target]:
         """Get targets in resolution order (dependencies before dependents)."""
         return topological_sort_targets(self.project.targets)
+
+    def _rebind_derived_targets(self) -> None:
+        """Point each build_for() copy's dependencies at its own environment.
+
+        Deferred to here, unlike the copy itself, so build_for() can be
+        called on a target and on the things it depends on in either order.
+        """
+        for target in self.project.targets:
+            if target._derived_from is not None:
+                rebind_derived_dependencies(target)
 
     def _resolve_target(self, target: Target) -> None:
         """Resolve a single target via its registered factory."""

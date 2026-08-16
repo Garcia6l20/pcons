@@ -381,6 +381,101 @@ def _make_default_requirements(
     return reqs
 
 
+def _variant_for(dep: Target, copy: Target) -> Target:
+    """The build of `dep` that belongs in `copy`, a build_for() copy.
+
+    A dependency written on the source target was built for the source's
+    environment. Linking it into a copy built for another one would mix two
+    toolchains' objects, so it is replaced by that dependency's own copy for
+    the copy's environment, and refused when there is none.
+    """
+    env = copy._env
+    origin = dep._derived_from or dep
+    if env is None or origin._env is env or origin._env is None:
+        return origin
+    if (variant := origin._variants.get(env)) is not None:
+        return variant
+    raise ValueError(
+        f"Target '{copy.name}' is built for environment "
+        f"'{copy._env_subdir}', but it depends on '{origin.name}', which is "
+        f"built for another one.\n"
+        f"  Add: {origin.name}_copy = {origin.name}.build_for(<the "
+        f"'{copy._env_subdir}' environment>)\n"
+        f"  before {copy.name}.build_for() is resolved."
+    )
+
+
+def _rebind_in_place(items: list[Any] | UserList[Any], copy: Target) -> None:
+    """Point each Target in `items` at its counterpart for `copy`'s env."""
+    rebound = [
+        _variant_for(item, copy) if isinstance(item, Target) else item for item in items
+    ]
+    if rebound != list(items):
+        items.clear()
+        items.extend(rebound)
+
+
+def rebind_derived_dependencies(copy: Target) -> None:
+    """Retarget a build_for() copy's dependencies at its own environment.
+
+    Run when the project resolves rather than when the copy is made, so the
+    build script can call build_for() on a target and on the things it
+    depends on in either order.
+    """
+    for reqs in (copy.public, copy.private):
+        if libs := reqs._data.get("link_libs"):
+            _rebind_in_place(libs, copy)
+    for deps in (
+        copy._dependencies,
+        copy._implicit_target_deps,
+        copy._implicit_target_deps_output_only,
+    ):
+        _rebind_in_place(deps, copy)
+
+
+def copy_target_contents(source: Target, copy: Target) -> None:
+    """Fill in a build_for() copy from the target it was copied from.
+
+    Everything written on the source target so far is copied: sources, usage
+    requirements, dependencies and output naming. Environment-level settings
+    are not, because they were never on the target -- the copy's environment
+    supplies its own.
+    """
+    copy.add_sources(list(source._sources))
+    if source._pending_sources:
+        copy._pending_sources = list(source._pending_sources)
+    for path, env in source._source_envs.items():
+        copy._source_envs.setdefault(path, env)
+
+    copy.public.merge(source.public)
+    copy.private.merge(source.private)
+
+    copy._dependencies.extend(
+        dep for dep in source._dependencies if dep not in copy._dependencies
+    )
+    copy._implicit_target_deps.extend(source._implicit_target_deps)
+    copy._implicit_target_deps_output_only.extend(
+        source._implicit_target_deps_output_only
+    )
+    copy._extra_implicit_deps.extend(source._extra_implicit_deps)
+    copy._extra_implicit_deps_output_only.extend(
+        source._extra_implicit_deps_output_only
+    )
+    copy.required_languages |= source.required_languages
+
+    if copy.output_name is None:
+        copy.output_name = source.output_name
+    if copy.output_prefix is None:
+        copy.output_prefix = source.output_prefix
+    if copy.output_suffix is None:
+        copy.output_suffix = source.output_suffix
+    if copy.build_by_default:
+        copy.build_by_default = source.build_by_default
+
+    for key, value in source._builder_data.items():
+        copy._builder_data.setdefault(key, value)
+
+
 class Target:
     """A named build target with usage requirements.
 
@@ -474,6 +569,11 @@ class Target:
         # Build subdirectory of the environment this target was built for,
         # set only on a target produced by build_for().
         "_env_subdir",
+        # build_for() copies of this target, keyed by their environment.
+        "_variants",
+        # The target this one is a build_for() copy of, which is what its
+        # dependencies are retargeted against when the project resolves.
+        "_derived_from",
         # Utility targets (lupdate, doc generation, ...) set this False:
         # excluded from 'all' and implicit defaults, built only when
         # requested by name/alias or listed in Default().
@@ -535,6 +635,8 @@ class Target:
         # (add_sources(..., env=...)), keyed by source node path.
         self._source_envs: dict[Path, Environment] = {}
         self._env_subdir = env_subdir
+        self._variants: dict[Environment, Target] = {}
+        self._derived_from: Target | None = None
 
         from pcons.core.project import Project
 
@@ -640,6 +742,63 @@ class Target:
     def nodes(self) -> list[FileNode]:
         """All build nodes for this target (intermediate + output)."""
         return self.intermediate_nodes + self.output_nodes
+
+    def build_for(self, env: Environment) -> Target:
+        """Build this target again with another environment.
+
+        Returns a new Target with this one's sources, dependencies and usage
+        requirements, bound to ``env``, with its outputs under the
+        environment's build subdirectory (``build/<env.name>/``).
+
+        The copy is taken here and now, so what each build gets is decided by
+        where a line sits: before the call it is shared, after it belongs to
+        this target alone, and on the returned target it belongs to the copy.
+
+        Environment-level settings -- the compiler commands, ``env.cc.flags``,
+        ``env.cc.includes`` -- are never copied: they come from ``env``
+        itself. Only what was written on the target is.
+
+        Calling this twice with the same environment returns the same target.
+
+        Example:
+            common = project.StaticLibrary("common", mcu, sources=["common.c"])
+            common.public.include_dirs.append(inc)     # both builds
+            common_host = common.build_for(host)       # build/host/libcommon.a
+            common.private.compile_flags.append("-ffreestanding")  # mcu only
+        """
+        if (existing := self._variants.get(env)) is not None:
+            return existing
+        if env is self._env:
+            raise ValueError(
+                f"Target '{self.name}' is already built with this environment."
+            )
+        if self._derived_from is not None:
+            raise ValueError(
+                f"Target '{self.name}' is itself a build_for() copy "
+                f"(environment '{self._env_subdir}'); derive from the target it "
+                f"was copied from instead."
+            )
+        subdir = env.build_subdir
+        if subdir is None:
+            raise ValueError(
+                f"build_for() needs a named environment: the copy of "
+                f"'{self.name}' writes its outputs to build/<name>/, and an "
+                f"unnamed environment would write over the original. Create it "
+                f'as project.Environment(..., name="host").'
+            )
+        copy = Target(
+            self.name,
+            target_type=self.target_type,
+            builder=self.builder,
+            defined_at=get_caller_location(),
+            env_subdir=str(subdir),
+        )
+        copy._env = env
+        copy._builder_name = self._builder_name
+        copy._derived_from = self
+        self._variants[env] = copy
+        copy_target_contents(self, copy)
+        return copy
 
     def __link_libs_validator(self, item: Target | str):
         if self._resolved:
