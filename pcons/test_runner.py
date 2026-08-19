@@ -306,6 +306,25 @@ _DISCOVERERS: dict[
 }
 
 
+_DOCTEST_SUMMARY = re.compile(r"^\[doctest\] test cases:\s*(\d+)", re.MULTILINE)
+
+
+def _doctest_ran_nothing(stdout: str, stderr: str) -> bool:
+    """True when a doctest binary reports that no case was executed.
+
+    doctest exits 0 when its ``--test-case`` filter selects nothing, so
+    the exit code alone cannot tell a passing case from a filter that
+    matched none. The summary line can.
+    """
+    match = _DOCTEST_SUMMARY.search(stdout) or _DOCTEST_SUMMARY.search(stderr)
+    return match is not None and int(match.group(1)) == 0
+
+
+_RAN_NOTHING_CHECKS: dict[str, Callable[[str, str], bool]] = {
+    "doctest": _doctest_ran_nothing,
+}
+
+
 def expand_discovered_tests(
     tests: list[dict], build_dir: Path
 ) -> tuple[list[dict], dict[str, list[str]]]:
@@ -366,6 +385,7 @@ def expand_discovered_tests(
             child["name"] = f"{base_name}.{case_name}"
             child["command"] = [test["command"][0], *base_args, *case_filter]
             child["discover"] = None
+            child["framework"] = protocol
             expanded.append(child)
             child_names.append(child["name"])
         parent_to_children[base_name] = child_names
@@ -476,6 +496,19 @@ def run_one_test(test: dict, build_dir: Path) -> TestResult:
         )
 
     duration = time.monotonic() - start
+    ran_nothing = _RAN_NOTHING_CHECKS.get(test.get("framework") or "")
+    if ran_nothing is not None and ran_nothing(result.stdout, result.stderr):
+        return TestResult(
+            name=name,
+            status=FAIL,
+            duration=duration,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            message="no case ran: the filter selected nothing",
+            labels=labels,
+        )
+
     passed = (result.returncode == 0) != should_fail
     return TestResult(
         name=name,
