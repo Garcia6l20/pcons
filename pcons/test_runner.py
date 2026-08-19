@@ -230,6 +230,16 @@ def _discover_gtest(
     return cases
 
 
+def _doctest_filter(case_name: str) -> str:
+    """Turn a case name into a ``--test-case`` pattern that selects it.
+
+    doctest splits the filter on commas, so a name containing one must
+    escape it. Its parser accepts ``\\,`` and ``\\\\``, and its matcher
+    gives a backslash no meaning, so the escaped name matches literally.
+    """
+    return case_name.replace("\\", "\\\\").replace(",", "\\,")
+
+
 def _discover_doctest(
     binary: str, cwd: Path, env: dict[str, str]
 ) -> list[tuple[str, list[str]]]:
@@ -261,7 +271,7 @@ def _discover_doctest(
             continue
         if line.startswith("="):
             continue
-        cases.append((line, [f"--test-case={line}"]))
+        cases.append((line, [f"--test-case={_doctest_filter(line)}"]))
     return cases
 
 
@@ -309,19 +319,20 @@ _DISCOVERERS: dict[
 _DOCTEST_SUMMARY = re.compile(r"^\[doctest\] test cases:\s*(\d+)", re.MULTILINE)
 
 
-def _doctest_ran_nothing(stdout: str, stderr: str) -> bool:
-    """True when a doctest binary reports that no case was executed.
+def _doctest_cases_run(stdout: str, stderr: str) -> int | None:
+    """How many cases a doctest binary reports having executed.
 
     doctest exits 0 when its ``--test-case`` filter selects nothing, so
     the exit code alone cannot tell a passing case from a filter that
-    matched none. The summary line can.
+    matched none. The summary line can. ``None`` when no summary was
+    printed, which leaves the result to the exit code.
     """
     match = _DOCTEST_SUMMARY.search(stdout) or _DOCTEST_SUMMARY.search(stderr)
-    return match is not None and int(match.group(1)) == 0
+    return int(match.group(1)) if match else None
 
 
-_RAN_NOTHING_CHECKS: dict[str, Callable[[str, str], bool]] = {
-    "doctest": _doctest_ran_nothing,
+_CASE_COUNTERS: dict[str, Callable[[str, str], int | None]] = {
+    "doctest": _doctest_cases_run,
 }
 
 
@@ -496,8 +507,14 @@ def run_one_test(test: dict, build_dir: Path) -> TestResult:
         )
 
     duration = time.monotonic() - start
-    ran_nothing = _RAN_NOTHING_CHECKS.get(test.get("framework") or "")
-    if ran_nothing is not None and ran_nothing(result.stdout, result.stderr):
+    counter = _CASE_COUNTERS.get(test.get("framework") or "")
+    count = counter(result.stdout, result.stderr) if counter else None
+    if count is not None and count != 1:
+        selected = (
+            "the filter selected nothing"
+            if count == 0
+            else f"the filter selected {count} cases"
+        )
         return TestResult(
             name=name,
             status=FAIL,
@@ -505,7 +522,7 @@ def run_one_test(test: dict, build_dir: Path) -> TestResult:
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
-            message="no case ran: the filter selected nothing",
+            message=f"expected one case to run, {selected}",
             labels=labels,
         )
 

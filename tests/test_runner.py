@@ -29,7 +29,7 @@ from pcons.test_runner import (
     _discover_catch2,
     _discover_doctest,
     _discover_gtest,
-    _doctest_ran_nothing,
+    _doctest_cases_run,
     _validate_deps,
     expand_discovered_tests,
     expand_filter_with_deps,
@@ -661,63 +661,120 @@ class TestDiscoverParsers:
 COMMA_CASE = "a gadget says gadget, and names no superclass"
 
 
-class TestDoctestSelectedNothing:
-    """doctest exits 0 when its ``--test-case`` filter selects no case.
+class TestDoctestCommaInCaseName:
+    """doctest splits ``--test-case`` on commas.
 
-    A case name containing a comma reaches the binary as several patterns,
-    since doctest splits the filter on commas, and none of them matches.
-    Without the summary check such a case is reported as passed.
+    An unescaped name containing one reaches the binary as several
+    patterns, none of which matches. doctest then runs zero cases and
+    exits 0, which the runner used to report as passed.
     """
 
-    def test_zero_cases_in_the_summary_is_detected(self):
-        assert _doctest_ran_nothing(
-            "[doctest] test cases: 0 | 0 passed | 0 failed | 9 skipped\n", ""
-        )
-
-    def test_a_case_that_ran_is_not_detected(self):
-        assert not _doctest_ran_nothing(
-            "[doctest] test cases: 1 | 1 passed | 0 failed | 8 skipped\n", ""
-        )
-
-    def test_output_without_a_summary_is_left_alone(self):
-        assert not _doctest_ran_nothing("nothing doctest-shaped here\n", "")
-
-    def test_discovered_case_is_tagged_with_its_framework(self, tmp_path):
-        lister = _make_lister(
+    def _lister(self, tmp_path, *names):
+        listing = "".join(f"{n}\n" for n in names)
+        return _make_lister(
             tmp_path,
             "fake_doctest.py",
-            f"[doctest] listing all test case names\n===\n{COMMA_CASE}\n===\n",
+            f"[doctest] listing all test case names\n===\n{listing}===\n",
         )
+
+    def test_a_comma_is_escaped_in_the_filter(self, tmp_path):
+        cases = _discover_doctest(
+            str(self._lister(tmp_path, COMMA_CASE)), tmp_path, dict(os.environ)
+        )
+        assert cases == [
+            (
+                COMMA_CASE,
+                [r"--test-case=a gadget says gadget\, and names no superclass"],
+            )
+        ]
+
+    def test_a_backslash_is_escaped_too(self, tmp_path):
+        name = r"a path like C:\dir, and more"
+        cases = _discover_doctest(
+            str(self._lister(tmp_path, name)), tmp_path, dict(os.environ)
+        )
+        assert cases == [(name, [r"--test-case=a path like C:\\dir\, and more"])]
+
+    def test_a_name_without_a_comma_is_passed_through(self, tmp_path):
+        cases = _discover_doctest(
+            str(self._lister(tmp_path, "plain case")), tmp_path, dict(os.environ)
+        )
+        assert cases == [("plain case", ["--test-case=plain case"])]
+
+    def test_the_case_keeps_its_real_name(self, tmp_path):
         tests = [
             {
                 "name": "gadgets",
-                "command": [str(lister)],
+                "command": [str(self._lister(tmp_path, COMMA_CASE))],
                 "discover": "doctest",
                 "labels": [],
             }
         ]
         expanded, _ = expand_discovered_tests(tests, tmp_path)
+        assert expanded[0]["name"] == f"gadgets.{COMMA_CASE}"
         assert expanded[0]["framework"] == "doctest"
 
-    def test_a_case_that_never_ran_fails(self, tmp_path):
-        binary = _make_exit_script(
+
+class TestDoctestCaseCount:
+    def test_summary_is_parsed(self):
+        assert (
+            _doctest_cases_run(
+                "[doctest] test cases: 1 | 1 passed | 0 failed | 8 skipped\n", ""
+            )
+            == 1
+        )
+
+    def test_zero_cases_is_parsed(self):
+        assert (
+            _doctest_cases_run(
+                "[doctest] test cases: 0 | 0 passed | 0 failed | 9 skipped\n", ""
+            )
+            == 0
+        )
+
+    def test_output_without_a_summary_is_unknown(self):
+        assert _doctest_cases_run("nothing doctest-shaped here\n", "") is None
+
+    def _summary_binary(self, tmp_path, name, count):
+        return _make_exit_script(
             tmp_path,
-            "silent_doctest.py",
+            name,
             "import sys\n"
-            "sys.stdout.write("
-            "'[doctest] test cases: 0 | 0 passed | 0 failed | 9 skipped\\n')\n"
+            f"sys.stdout.write('[doctest] test cases: {count} | "
+            "0 passed | 0 failed\\n')\n"
             "sys.exit(0)\n",
         )
+
+    def _run(self, tmp_path, binary):
         test = {
             "name": f"gadgets.{COMMA_CASE}",
-            "command": [str(binary), f"--test-case={COMMA_CASE}"],
+            "command": [str(binary)],
             "framework": "doctest",
             "labels": [],
         }
-        result = run_one_test(test, tmp_path)
+        return run_one_test(test, tmp_path)
+
+    def test_a_case_that_never_ran_fails(self, tmp_path):
+        result = self._run(tmp_path, self._summary_binary(tmp_path, "none.py", 0))
         assert result.status == FAIL
         assert result.returncode == 0
-        assert "filter selected nothing" in result.message
+        assert "the filter selected nothing" in result.message
+
+    def test_a_filter_matching_several_cases_fails(self, tmp_path):
+        result = self._run(tmp_path, self._summary_binary(tmp_path, "many.py", 3))
+        assert result.status == FAIL
+        assert "the filter selected 3 cases" in result.message
+
+    def test_one_case_is_reported_normally(self, tmp_path):
+        result = self._run(tmp_path, self._summary_binary(tmp_path, "one.py", 1))
+        assert result.status == PASS
+
+    def test_a_test_without_a_framework_is_left_alone(self, tmp_path):
+        binary = self._summary_binary(tmp_path, "untagged.py", 0)
+        result = run_one_test(
+            {"name": "plain", "command": [str(binary)], "labels": []}, tmp_path
+        )
+        assert result.status == PASS
 
 
 class TestExpandDiscovered:

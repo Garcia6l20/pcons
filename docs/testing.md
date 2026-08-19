@@ -121,6 +121,12 @@ Protocols supported:
 | `"doctest"` | `--list-test-cases --no-version` | `<bin> --test-case="<name>"` |
 | `"catch2"` | `--list-test-names-only` | `<bin> "<name>"` |
 
+doctest splits `--test-case` on commas, so a case name containing one is
+filtered with `\,` and any backslash in the name is doubled. A doctest
+case whose run does not report exactly one case is reported as failed
+rather than passed: doctest exits 0 when a filter selects nothing, and
+`*` or `?` in a case name still match as wildcards.
+
 If discovery fails (binary missing, framework not cooperative), the
 runner falls back to running the parent as a single test and prints a
 warning. References to the discovered parent in another test's
