@@ -657,6 +657,33 @@ class TestDiscoverParsers:
         assert cases[0][1] == ["first"]
 
 
+COMMA_CASE = "a gadget says gadget, and names no superclass"
+
+
+class TestDoctestCommaInCaseName:
+    """doctest splits ``--test-case`` on commas.
+
+    A case name containing a comma therefore reaches the binary as several
+    patterns, none of which matches. doctest runs zero cases and exits 0,
+    so the runner reports the case as passed without ever running it.
+    """
+
+    def test_comma_in_a_case_name_does_not_reach_the_filter(self, tmp_path):
+        lister = _make_lister(
+            tmp_path,
+            "fake_doctest.py",
+            "[doctest] listing all test case names\n"
+            "===\n"
+            "plain case\n"
+            f"{COMMA_CASE}\n"
+            "===\n"
+            "[doctest] unskipped: 2\n",
+        )
+        cases = _discover_doctest(str(lister), tmp_path, dict(os.environ))
+        flag = dict(cases)[COMMA_CASE][0]
+        assert "," not in flag.split("=", 1)[1]
+
+
 class TestExpandDiscovered:
     def test_expansion_replaces_parent(self, tmp_path):
         lister = _make_lister(
