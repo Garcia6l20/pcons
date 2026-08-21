@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A missing Environment attribute now suggests the real accessor.** The
+  AttributeError proposes the closest match (`env.toolchain_name` →
+  "Did you mean 'toolchain'?") and lists the environment's properties,
+  not just its tools and variables.
 - **A source-tree `.manifest` or `.def` linker input now works.** Its path
   reached the linker incorrectly; `/MANIFESTINPUT:` and
   `/DEF:` are now rewritten execution-relative like every other

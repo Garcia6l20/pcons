@@ -12,6 +12,7 @@ import re
 from collections import UserList
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from difflib import get_close_matches
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -240,10 +241,19 @@ class Environment(_EnvironmentStubs):
         if name in vars_dict:
             return vars_dict[name]
 
+        properties = sorted(
+            attr
+            for klass in type(self).__mro__
+            for attr, member in vars(klass).items()
+            if isinstance(member, property) and not attr.startswith("_")
+        )
+        close = get_close_matches(name, [*tools, *vars_dict, *properties], n=1)
+        hint = f" Did you mean '{close[0]}'?" if close else ""
         raise AttributeError(
-            f"Environment has no tool or variable '{name}'. "
+            f"Environment has no tool or variable '{name}'.{hint} "
             f"Tools: {', '.join(tools.keys()) or '(none)'}. "
-            f"Vars: {', '.join(vars_dict.keys()) or '(none)'}"
+            f"Vars: {', '.join(vars_dict.keys()) or '(none)'}. "
+            f"Properties: {', '.join(properties)}"
         )
 
     def __setattr__(self, name: str, value: Any) -> None:

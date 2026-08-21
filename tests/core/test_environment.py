@@ -30,6 +30,17 @@ class TestEnvironmentBasic:
             _ = env.missing
         assert "missing" in str(exc_info.value)
 
+    def test_get_missing_suggests_the_close_match(self, test_project):  # noqa: F811
+        """A near-miss is answered with the real accessor: env.toolchain_name
+        once raised an error that never mentioned env.toolchain."""
+        env = Environment()
+        with pytest.raises(AttributeError) as exc_info:
+            _ = env.toolchain_name
+        message = str(exc_info.value)
+        assert "Did you mean 'toolchain'?" in message
+        assert "Properties: " in message
+        assert "toolchains" in message
+
     def test_get_with_default(self, test_project):  # noqa: F811
         env = Environment()
         assert env.get("missing") is None
