@@ -166,9 +166,10 @@ option declared here reaches a command only if the command declares it too.
 
 ### `pcons test`
 
-Run the tests declared by `project.Test()`. This subcommand takes the test
-runner's own options (`-L`, `-R`, `-E`, `--junit` and so on), not the ones
-below; see [Testing](testing.md).
+Run the tests declared by `project.Test()`. Like `ninja test`, it builds the
+test programs first (the `test-build` target); `--no-build` skips that. This
+subcommand takes the test runner's own options (`-L`, `-R`, `-E`, `--junit`
+and so on), not the ones below; see [Testing](testing.md).
 
 Everything after `test` reaches the runner untouched, apart from `-C DIR`.
 Write `pcons test -- -C DIR` to hand `-C` to the runner instead: the first

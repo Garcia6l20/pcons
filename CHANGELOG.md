@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pcons test` builds the test programs first.** Like `ninja test`, whose
+  edge already depended on the `test-build` target, `pcons test` now builds
+  that target in the directory whose `tests.json` it is about to read, so a
+  generated tree with unbuilt binaries no longer reports "Program not
+  found", and stale build files regenerate before the tests — or their
+  `--list`ing — are read. `--no-build` skips the build step. (#103)
+
 ### Fixed
 
 - **A missing Environment attribute now suggests the real accessor.** The

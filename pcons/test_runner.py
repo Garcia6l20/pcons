@@ -914,6 +914,12 @@ def _default_jobs() -> int:
     is_flag=True,
     help="Stop launching new tests after the first failure",
 )
+@click.option(
+    "--no-build",
+    is_flag=True,
+    help="Do not build the test programs first "
+    "(pcons test builds the test-build target before running)",
+)
 def cli_test(
     manifest: Path | None,
     build_dir: Path | None,
@@ -927,6 +933,7 @@ def cli_test(
     junit: Path | None,
     no_color: bool,
     stop_on_fail: bool,
+    no_build: bool,
 ) -> int:
     """Run tests declared by project.Test() in pcons-build.py."""
     logging.basicConfig(

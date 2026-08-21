@@ -153,7 +153,7 @@ Valid property names are the same kwargs accepted by `project.Test()`:
 
 ```bash
 ninja test                    # build, then run, all tests
-pcons test                    # same effect, runs the test runner directly
+pcons test                    # same effect; --no-build skips the build step
 pcons test -L unit            # only run "unit"-labeled tests
 pcons test -L unit -LE slow   # unit, excluding slow
 pcons test -R '^math\.'       # only run tests whose name matches the regex

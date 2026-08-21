@@ -5222,6 +5222,101 @@ class TestBuildDirForwardedToTheRunner:
         assert seen == [["-B", "out", "-j", "1"]]
 
 
+class TestTestBuildsFirst:
+    """`pcons test` builds `test-build` in the directory whose manifest the
+    runner is about to read, the way `ninja test` orders itself after
+    `test-build`. No manifest, no build: the runner's own message already
+    says to generate first."""
+
+    def _capture_build_tool(
+        self, monkeypatch: pytest.MonkeyPatch, code: int = 0
+    ) -> list[tuple[Path, list[str] | None]]:
+        """Stand in for the build tool and record what is asked of it."""
+        ran: list[tuple[Path, list[str] | None]] = []
+
+        def fake(build_dir: Path, *, targets: list[str] | None = None, **kw: object):
+            ran.append((build_dir, targets))
+            return code
+
+        monkeypatch.setattr("pcons.cli._run_build_tool", fake)
+        return ran
+
+    @staticmethod
+    def _manifest(tmp_path: Path, build_dir: str = "build") -> Path:
+        (tmp_path / build_dir).mkdir()
+        (tmp_path / build_dir / "tests.json").write_text("{}")
+        return tmp_path / build_dir
+
+    def test_builds_test_build_before_the_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        build_dir = self._manifest(tmp_path)
+        ran = self._capture_build_tool(monkeypatch)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test").exit_code == 0
+        assert ran == [(build_dir, ["test-build"])]
+        assert seen == [[]]
+
+    def test_no_manifest_means_no_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        ran = self._capture_build_tool(monkeypatch)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test").exit_code == 0
+        assert ran == []
+        assert seen == [[]]
+
+    def test_no_build_skips_the_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._manifest(tmp_path)
+        ran = self._capture_build_tool(monkeypatch)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test", "--no-build").exit_code == 0
+        assert ran == []
+        assert seen == [["--no-build"]]
+
+    def test_list_builds_first_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Listing reads the manifest, which may be stale, so `--list` builds
+        first like a real run does (#103)."""
+        monkeypatch.chdir(tmp_path)
+        build_dir = self._manifest(tmp_path)
+        ran = self._capture_build_tool(monkeypatch)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test", "--list").exit_code == 0
+        assert ran == [(build_dir, ["test-build"])]
+        assert seen == [["--list"]]
+
+    def test_the_runners_own_build_dir_steers_the_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A -B spelled after `test` wins, exactly as it does in the runner."""
+        monkeypatch.chdir(tmp_path)
+        self._manifest(tmp_path, "build")
+        other = self._manifest(tmp_path, "other")
+        ran = self._capture_build_tool(monkeypatch)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test", "-B", "other").exit_code == 0
+        assert ran == [(other, ["test-build"])]
+        assert seen == [["-B", "other"]]
+
+    def test_a_failing_build_stops_before_the_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        build_dir = self._manifest(tmp_path)
+        ran = self._capture_build_tool(monkeypatch, code=1)
+        seen = _capture_test_runner(monkeypatch)
+        assert _invoke("test").exit_code == 1
+        assert ran == [(build_dir, ["test-build"])]
+        assert seen == []
+
+
 class TestDoubleDashEscape:
     """`--` marks the rest of argv as targets, dashes and all.
 

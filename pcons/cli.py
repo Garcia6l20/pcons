@@ -2885,7 +2885,49 @@ def cli_test(ctx: PconsContext, argv: tuple[str, ...]) -> None:
         and parent.get_parameter_source("build_dir") is ParameterSource.COMMANDLINE
     ):
         forwarded = ["-B", str(parent.params["build_dir"])]
+
+    # Build the test programs first, as `ninja test` does through its edge's
+    # test-build dependency. The build runs in the directory whose manifest
+    # the runner is about to read (a stale build.ninja regenerates itself),
+    # so a manifest with unbuilt binaries no longer reports "Program not
+    # found". --list builds too: listing reads the manifest, which may be
+    # stale (#103). Skipped for --help, on request (--no-build), with an
+    # explicit --manifest (the user is steering), and when there is no
+    # manifest yet — there the runner's message already says to generate
+    # first.
+    skips_build = {"-h", "--help", "--no-build"}
+    if not skips_build.intersection(argv) and not any(
+        a == "--manifest" or a.startswith("--manifest=") for a in argv
+    ):
+        from pcons.test_runner import _env_build_dir, find_manifest
+
+        # The same precedence the runner applies: its own -B (after `test`)
+        # wins over one spelled before the subcommand, then the environment,
+        # then the upward search.
+        manifest_dir = (
+            _argv_build_dir(argv)
+            or (Path(forwarded[1]) if forwarded else None)
+            or _env_build_dir()
+        )
+        manifest = find_manifest(Path.cwd(), manifest_dir)
+        if manifest is not None:
+            code = _run_build_tool(manifest.parent, targets=["test-build"])
+            if code != 0:
+                ctx.exit(code)
+
     ctx.exit(test_main(forwarded + list(argv)))
+
+
+def _argv_build_dir(argv: tuple[str, ...]) -> Path | None:
+    """A -B/--build-dir the user spelled after ``test``, if any."""
+    for i, arg in enumerate(argv):
+        if arg in ("-B", "--build-dir") and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("-B") and arg != "-B":
+            return Path(arg[2:])
+        if arg.startswith("--build-dir="):
+            return Path(arg.removeprefix("--build-dir="))
+    return None
 
 
 @cli.group(
