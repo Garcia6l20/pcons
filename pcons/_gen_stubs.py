@@ -49,12 +49,33 @@ def _stub_targets() -> dict[str, Callable[[], str]]:
     }
 
 
+def _import_shipped_toolchains() -> None:
+    """Import every shipped toolchain so its builders and tools register.
+
+    Registration happens on import, so a generator that runs before anything
+    has imported a toolchain sees an incomplete registry and silently drops
+    its entries. Ordering must not decide the output, so every generator
+    that reads a registry calls this first.
+
+    The package is walked rather than listed, so a new toolchain module is
+    picked up by existing; a hand-written list is one edit away from
+    dropping a toolchain out of the generated stubs without saying so.
+    """
+    import importlib
+    import pkgutil
+
+    import pcons.contrib.latex.toolchain  # noqa: F401
+    import pcons.toolchains
+
+    for info in pkgutil.walk_packages(
+        pcons.toolchains.__path__, prefix="pcons.toolchains."
+    ):
+        importlib.import_module(info.name)
+
+
 def generate_toolchain_names() -> str:
     """Produce the full content of `core/_toolchain_names.py`."""
-    # Importing populates the registry; contrib toolchains must be
-    # listed explicitly.
-    import pcons.contrib.latex.toolchain  # noqa: F401
-    import pcons.toolchains  # noqa: F401
+    _import_shipped_toolchains()
     from pcons.tools.toolchain import toolchain_registry
 
     lines = [
@@ -84,10 +105,7 @@ def generate_toolchain_names() -> str:
 
 def generate_preset_names() -> str:
     """Produce the full content of `core/_preset_names.py`."""
-    # Importing registers every shipped toolchain class; contrib toolchains
-    # must be listed explicitly (same as generate_toolchain_names).
-    import pcons.contrib.latex.toolchain  # noqa: F401
-    import pcons.toolchains  # noqa: F401
+    _import_shipped_toolchains()
     from pcons.tools.toolchain import BaseToolchain
 
     # preset name → toolchain class names that declare it. Only classes with
@@ -251,6 +269,7 @@ if TYPE_CHECKING:
 
 def generate_project_builder_stubs() -> str:
     """Produce the full content of `_project_builder_stubs.py`."""
+    _import_shipped_toolchains()
     register_builtin_builders()
     parts: list[str] = [_PROJECT_FILE_HEADER]
 
@@ -291,20 +310,7 @@ def _collect_tool_names() -> list[tuple[str, str]]:
     Returns a sorted list of (tool_name, comma-joined-source-toolchain-names),
     including Environment's standalone tools.
     """
-    # Every shipped toolchain (core + contrib) must be imported so its
-    # class registers as a BaseToolchain subclass; a missing entry here
-    # is the most likely failure mode when adding a new toolchain.
-    import pcons.contrib.latex.toolchain  # noqa: F401
-    import pcons.toolchains.clang_cl  # noqa: F401
-    import pcons.toolchains.cuda  # noqa: F401
-    import pcons.toolchains.cython  # noqa: F401
-    import pcons.toolchains.emscripten  # noqa: F401
-    import pcons.toolchains.gcc  # noqa: F401
-    import pcons.toolchains.gfortran  # noqa: F401
-    import pcons.toolchains.llvm  # noqa: F401
-    import pcons.toolchains.msvc  # noqa: F401
-    import pcons.toolchains.qt.toolchain  # noqa: F401
-    import pcons.toolchains.wasi  # noqa: F401
+    _import_shipped_toolchains()
     from pcons.core.environment import Environment
     from pcons.tools.toolchain import BaseToolchain
 
