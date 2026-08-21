@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Tests for pcons.core.paths - PathResolver."""
 
+import logging
+import warnings
 from pathlib import Path
 
-import pytest
-
 from pcons.core.paths import PathResolver
+from pcons.util.source_location import SourceLocation
 
 
 class TestPathResolverCreation:
@@ -100,8 +101,11 @@ class TestNormalizeTargetPath:
         result = resolver.normalize_target_path(abs_path)
         assert result == Path("dist/foo.tar.gz")
 
-    def test_normalize_target_warns_on_build_prefix(self, tmp_path: Path) -> None:
-        """Relative paths starting with build_dir name should warn but keep path."""
+    def test_normalize_target_absorbs_build_prefix(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A leading build_dir prefix is absorbed, once: targets may be
+        written from the project root or the build directory alike."""
         project_root = tmp_path / "project"
         project_root.mkdir()
         build_dir = project_root / "build"
@@ -109,12 +113,24 @@ class TestNormalizeTargetPath:
 
         resolver = PathResolver(project_root, Path("build"))
 
-        # Relative path starting with "build/" - warn but keep
-        with pytest.warns(UserWarning, match="starts with build directory"):
-            result = resolver.normalize_target_path("build/foo.tar.gz")
+        # Quiet by default: build_dir / "foo" arithmetic is unambiguous.
+        assert resolver.normalize_target_path("build/foo.tar.gz") == Path("foo.tar.gz")
 
-        # Path is kept as-is (NOT stripped)
+        # A hand-typed string may have meant a literal "build" subdirectory,
+        # so callers pass the location to blame and the absorption is announced.
+        at = SourceLocation("pcons-build.py", 12)
+        with caplog.at_level(logging.WARNING, logger="pcons.core.paths"):
+            result = resolver.normalize_target_path("build/foo.tar.gz", warn_at=at)
+        assert result == Path("foo.tar.gz")
+        assert "read as the build directory prefix" in caplog.text
+        assert "pcons-build.py" in caplog.text
+
+        # The prefix is absorbed once, so doubling it names that literal
+        # subdirectory — quietly, even for a string.
+        caplog.clear()
+        result = resolver.normalize_target_path("build/build/foo.tar.gz", warn_at=at)
         assert result == Path("build/foo.tar.gz")
+        assert caplog.text == ""
 
     def test_normalize_target_no_warn_different_prefix(self, tmp_path: Path) -> None:
         """Relative paths not starting with build_dir name should not warn."""
@@ -126,7 +142,6 @@ class TestNormalizeTargetPath:
         resolver = PathResolver(project_root, Path("build"))
 
         # No warning for paths not starting with build dir name
-        import warnings
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")

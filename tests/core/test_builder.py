@@ -109,7 +109,7 @@ class TestCommandBuilder:
         # Should create one target with multiple sources
         assert len(result) == 1
         assert isinstance(result[0], FileNode)
-        assert result[0].path == Path("app")
+        assert result[0].path == Path("build/app")
 
     def test_default_target_path(self, test_project):  # noqa: F811
         builder = CommandBuilder(
@@ -151,7 +151,7 @@ class TestCommandBuilder:
 
         assert len(result) == 1
         assert isinstance(result[0], FileNode)
-        assert result[0].path == Path("custom/output.o")
+        assert result[0].path == Path("build/custom/output.o")
 
     def test_target_has_dependencies(self, test_project):  # noqa: F811
         builder = CommandBuilder(
@@ -251,7 +251,7 @@ class TestCommandBuilderDepfile:
         # depfile is resolved to PathToken with the target path
         assert isinstance(info["depfile"], PathToken)
         assert info["depfile"].suffix == ".d"
-        assert info["depfile"].path == "foo.o"
+        assert Path(info["depfile"].path) == Path("build/foo.o")
         assert info["deps_style"] == "gcc"
 
     def test_msvc_deps_style_no_depfile(self, test_project):  # noqa: F811

@@ -144,6 +144,9 @@ class MissingSourceError(PconsError):
     Attributes:
         path: The path to the missing source file.
         target_name: The target that references this source (if known).
+        produced: ``(target name, real path, path below the build dir)`` when
+            a target builds a file of this name inside the build directory —
+            the source almost certainly meant that target's output.
     """
 
     def __init__(
@@ -151,16 +154,32 @@ class MissingSourceError(PconsError):
         path: str,
         location: SourceLocation | None = None,
         target_name: str | None = None,
+        produced: tuple[str, str, str] | None = None,
     ) -> None:
         self.path = path
         self.target_name = target_name
+        self.produced = produced
 
         msg = f"source file not found: {path}"
         if target_name:
             msg += f"\n  Referenced by target: {target_name}"
 
-        # Suggest checking the path
-        if not Path(path).is_absolute():
+        if produced:
+            # Sources are project-root-relative; build outputs live under the
+            # build directory. Naming a generated file by its build-dir-relative
+            # path therefore points into the source tree, where nothing is.
+            builder_name, real_path, below_build_dir = produced
+            # The suggestion uses project.build_dir rather than the
+            # directory's name: that name is the -B / PCONS_BUILD_DIR choice,
+            # so a literal would work only for whoever ran the build today.
+            msg += (
+                f"\n  Target '{builder_name}' builds a file of that path, as "
+                f"'{real_path}'.\n"
+                f"  To fix, either pass that target itself, or use the real "
+                f"path:\n"
+                f'      sources=[project.build_dir / "{below_build_dir}"]'
+            )
+        elif not Path(path).is_absolute():
             msg += "\n  Tip: Path is relative. Check that it's relative to the source directory."
 
         super().__init__(msg, location)

@@ -1627,7 +1627,7 @@ class TestRunGroup:
         result = _invoke("run", "flash")
 
         assert result.exit_code == 0
-        assert "outputs=hello.txt" in result.stdout
+        assert "outputs=build/hello.txt" in result.stdout.replace("\\", "/")
 
     def test_the_command_sees_the_live_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

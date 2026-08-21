@@ -16,8 +16,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found", and stale build files regenerate before the tests — or their
   `--list`ing — are read. `--no-build` skips the build step. (#103)
 
+### Changed
+
+- **Target paths may be written from the project root or the build
+  directory.** A leading build-dir component on a `target=` is absorbed,
+  once: `build_dir / "out.txt"` and `"out.txt"` mean the same file, in
+  every builder. A hand-typed string like `target="build/foo.h"` says so,
+  since it may have meant a literal `build` subdirectory of the build
+  directory — that is written with the prefix doubled
+  (`project.build_dir / "build/foo.h"`), which is quiet.
+- **`env.Command` goes through the same builder entry point as every other
+  builder,** so target anchoring, source normalization and `depends=`
+  happen in one place for all of them. Its output nodes now carry the
+  build-dir prefix like a compiler's or a linker's, and objects built from
+  a generated source no longer land under a redundant
+  `obj.<target>/build/` directory. `Tarfile` and `Zipfile` outputs are
+  anchored the same way; they built in the right place already, but their
+  nodes were the only build outputs whose paths lacked the prefix.
+- **A source that names a generated file now says which target builds it.**
+  Sources name files in the source tree, so a generated file referred to by
+  its build-dir-relative path pointed at a file nothing produces. The
+  validation error now names the target whose output it is and says to pass
+  that target in `sources=` instead of its path.
+
 ### Fixed
 
+- **A `Target` passed in `sources=` is compiled, not merely waited for.**
+  `sources=[gen]` means the files that target builds, the way a path names a
+  file; it used to order the build and nothing else, so a generated source
+  was silently left out of the link.
 - **A missing Environment attribute now suggests the real accessor.** The
   AttributeError proposes the closest match (`env.toolchain_name` →
   "Did you mean 'toolchain'?") and lists the environment's properties,

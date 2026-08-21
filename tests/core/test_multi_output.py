@@ -189,8 +189,8 @@ class TestMultiOutputBuilder:
 
         assert isinstance(result, OutputGroup)
         assert len(result) == 2
-        assert result.primary.path == Path("test.dll")
-        assert result.import_lib.path == Path("test.lib")
+        assert result.primary.path == Path("build/test.dll")
+        assert result.import_lib.path == Path("build/test.lib")
 
     def test_build_creates_nodes_with_correct_suffixes(self, test_project):  # noqa: F811
         builder = MultiOutputBuilder(

@@ -239,26 +239,29 @@ class BaseBuilder(ABC):
     def __call__(
         self,
         env: Environment,
-        target: str | Path | Node | None,
+        target: str | Path | Node | Sequence[str | Path | Node] | None,
         sources: list[str | Path | Node],
         **kwargs: Any,
     ) -> list[Node] | OutputGroup:
         """Build targets from sources: normalize inputs, delegate to _build().
 
-        ``depends=`` is handled here so every builder honours it identically,
-        with the same meaning it has on ``Target`` and ``env.Command``: an
-        implicit dependency, ordered before the build but kept off the
-        command line.
+        Every builder enters here — ``env.cc.Object`` and ``env.Command``
+        alike — so target anchoring, source normalization and ``depends=``
+        happen once, identically, for all of them. A builder that takes
+        several outputs passes *target* as a sequence.
         """
         depends = kwargs.pop("depends", None)
         source_nodes = self._normalize_sources(sources, env)
 
         if target is None:
-            target_paths = self._default_targets(source_nodes, env)
-        elif isinstance(target, Node):
-            target_paths = [Path(target.name)]
+            given: Sequence[str | Path | Node] = self._default_targets(
+                source_nodes, env
+            )
+        elif isinstance(target, (str, Path, Node)):
+            given = [target]
         else:
-            target_paths = [Path(target)]
+            given = list(target)
+        target_paths = anchor_target_paths(env, given, target_name=kwargs.get("name"))
 
         result = self._build(env, target_paths, source_nodes, **kwargs)
         if depends:
@@ -766,6 +769,47 @@ def _tokenize_one(token: Any) -> Any:
     if marker.index is None and not marker.is_slice:
         marker = replace(marker, start=0)
     return replace(marker, prefix=prefix, suffix=suffix)
+
+
+def anchor_target_paths(
+    env: Environment | None,
+    targets: Sequence[str | Path | Node],
+    *,
+    target_name: str | None = None,
+) -> list[Path]:
+    """Anchor target paths under the build directory (node-canonical form).
+
+    A relative target path is build-dir-relative; its node path carries the
+    build_dir prefix, so every output node names its file from the project
+    root no matter how the target was written. A path already starting with
+    the prefix is absorbed rather than doubled (targets may be written from
+    the project root or the build directory interchangeably); hand-typed
+    strings get a warning for that case, since the string may have meant a
+    literal subdirectory sharing the build directory's name, written by
+    doubling the prefix. Absolute paths outside the build directory pass
+    through untouched (external outputs), and an existing Node keeps its
+    identity: its path is already canonical, so anchoring it again would
+    name a second file.
+    """
+    project = getattr(env, "_project", None) if env is not None else None
+    if project is None or env is None:
+        return [Path(t.name) if isinstance(t, Node) else Path(t) for t in targets]
+    resolver = project._path_resolver
+    build_dir = Path(env.get("build_dir", "build"))
+    at = get_caller_location()
+    anchored: list[Path] = []
+    for t in targets:
+        if isinstance(t, Node):
+            anchored.append(Path(t.name))
+            continue
+        p = resolver.normalize_target_path(
+            t,
+            target_name=target_name,
+            warn_at=at if isinstance(t, str) else None,
+            build_dir=build_dir,
+        )
+        anchored.append(p if p.is_absolute() else build_dir / p)
+    return anchored
 
 
 def _output_role(project: Any, target: Path | str) -> str | None:

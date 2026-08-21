@@ -1199,7 +1199,15 @@ class Environment(_EnvironmentStubs):
         output nodes, use `target.output_nodes`.
 
         Args:
-            target: Output file(s) that the command produces.
+            target: Output file(s) that the command produces. Paths are
+                    relative to the build directory; a leading build-dir
+                    component is absorbed, so a target written from the
+                    project root (``build_dir / "out.txt"``) means the same
+                    file as ``"out.txt"``. For a file in a literal
+                    subdirectory sharing the build directory's name, write
+                    the prefix explicitly: ``project.build_dir / "build/x.h"``.
+                    An absolute path outside the build directory is an
+                    external output, produced in place.
             source: Input file(s) that the command depends on. Can be Targets
                    (whose output files become sources), paths, or None.
             command: The shell command to run. Supports variable substitution:
@@ -1223,9 +1231,9 @@ class Environment(_EnvironmentStubs):
                     several paths, the text repeats on each of them.
                     Any other $variable is expanded from this environment.
 
-                    **The command runs in the build directory**, which is the
-                    one place in pcons where paths are not relative to the
-                    project root (``sources=`` and ``target=`` are). So a path
+                    **The command runs in the build directory**, unlike
+                    ``sources=`` (project-root-relative) and ``target=``
+                    (build-dir-relative). So a path
                     written relative — "tools/gen.pl" — is looked for under
                     the build directory and won't be found. Spell it
                     "$SRCDIR/tools/gen.pl", pass an absolute path (pcons
@@ -1326,15 +1334,11 @@ class Environment(_EnvironmentStubs):
         from pcons.core.node import FileNode
         from pcons.core.target import Target as TargetClass
 
-        # Normalize target to list
-        if isinstance(target, (str, Path)):
-            targets = [Path(target)]
-        else:
-            targets = [Path(t) for t in target]
-
-        # Derive name from first target if not specified
+        # The builder anchors these; the name only needs the file's stem,
+        # which the prefix doesn't change.
         if name is None:
-            name = targets[0].stem
+            first = target if isinstance(target, (str, Path)) else list(target)[0]
+            name = Path(first).stem
 
         # Normalize source to list, separating Targets from immediate sources.
         # A Target's outputs don't exist until the resolve phase, so it can't
@@ -1373,12 +1377,15 @@ class Environment(_EnvironmentStubs):
             launcher=launcher,
         )
 
-        # Build the targets with immediate sources
-        normalized = builder._normalize_sources(immediate_sources)
-        nodes = builder._build(
+        # Nodes up front, so the declared order below can splice Targets back
+        # into their positions; the builder passes existing nodes through.
+        normalized = builder._normalize_sources(immediate_sources, self)
+        # The ordinary builder entry point, which anchors the targets and
+        # normalizes the sources exactly as it does for every other builder.
+        nodes = builder(
             self,
-            targets,
-            normalized,
+            target,
+            list(normalized),
             defined_at=get_caller_location(),
         )
 

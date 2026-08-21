@@ -122,9 +122,13 @@ def _unhandled_source_error(
     compilers = _compilers_by_language_priority(env)
     example = compilers[0] if compilers else "cc"
     others = ", ".join(f"env.{n}" for n in compilers[1:3])
+    # Written build-dir-relative, the base a target path is read against, so
+    # copying this line back into the script doesn't re-raise the build-dir
+    # prefix question it would otherwise pose.
+    as_target = target.path_resolver.normalize_target_path(source)
     lines.append(
         f"Pick a compiler for it explicitly and pass the object along:\n"
-        f'    obj = env.{example}.Object("{source}")'
+        f'    obj = env.{example}.Object("{as_target}")'
         + (f"  # or {others}" if others else "")
         + f"\n    project.{target._builder_name or 'Program'}"
         f"('{target.name}', env, sources=[..., obj[0]])"
@@ -217,6 +221,12 @@ class CompileLinkFactory:
 
         trace("resolve", "Resolving target: %s", target.name)
 
+        # A Target passed in sources= contributes its outputs, which exist by
+        # now: dependencies resolve first. This has to happen before the
+        # objects below are created, which is why it is not in
+        # resolve_pending() — by then the compile step has already run.
+        self._adopt_pending_sources(target)
+
         if is_enabled("resolve"):
             trace_value("resolve", "defined_at", target.defined_at)
             trace_value("resolve", "type", target.target_type)
@@ -266,15 +276,7 @@ class CompileLinkFactory:
 
                 aux_handler = self._get_auxiliary_input_handler(source.path, source_env)
                 if aux_handler is not None:
-                    file_path = source.path
-                    if (
-                        getattr(source, "_build_info", None) is not None
-                        or source.builder is not None
-                    ):
-                        # A generated auxiliary input (env.Command output)
-                        # should be stored as build-relative
-                        file_path = target.project.top.build_dir / file_path
-                    flag = aux_handler.flag_template.replace("$file", str(file_path))
+                    flag = aux_handler.flag_template.replace("$file", str(source.path))
                     auxiliary_inputs.append((source, flag, aux_handler))
                     trace("resolve", "    %s -> auxiliary input", source.path)
                     continue
@@ -352,7 +354,26 @@ class CompileLinkFactory:
         return effective
 
     def resolve_pending(self, target: Target) -> None:
-        """No-op: compile-link targets don't have pending sources."""
+        """No-op: resolve() adopted them, before creating the object nodes."""
+
+    def _adopt_pending_sources(self, target: Target) -> None:
+        """Turn Targets passed in ``sources=`` into ordinary source nodes.
+
+        ``sources=[gen]`` means "the files that target builds", the way a
+        path names a file. Without this they stayed pending and only ordered
+        the build, so a generated source was never compiled and the link
+        quietly lacked it.
+        """
+        if not target._pending_sources:
+            return
+        pending = target._pending_sources
+        target._pending_sources = None
+        existing = {s.path for s in target._sources if isinstance(s, FileNode)}
+        for source in pending:
+            for node in getattr(source, "output_nodes", ()):
+                if isinstance(node, FileNode) and node.path not in existing:
+                    existing.add(node.path)
+                    target._sources.append(node)
 
     # -------------------------------------------------------------------------
     # Object node creation (compilation step)
@@ -408,6 +429,12 @@ class CompileLinkFactory:
 
         obj_name = source.name + obj_suffix
         rel_dir = target.path_resolver.normalize_source_path(source.parent)
+        # A generated source's canonical path carries the build_dir prefix;
+        # its object belongs beside a source-tree file's, so strip it.
+        bd_parts = target.path_resolver.build_dir.parts
+        if bd_parts and rel_dir.parts[: len(bd_parts)] == bd_parts:
+            remainder = rel_dir.parts[len(bd_parts) :]
+            rel_dir = Path(*remainder) if remainder else Path()
         parts = [p for p in rel_dir.parts if p not in ("..", "/")]
         if parts:
             return obj_dir.joinpath(*parts) / obj_name

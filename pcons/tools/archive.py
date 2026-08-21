@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from pcons.core.builder import anchor_target_paths
 from pcons.core.builder_registry import builder
 from pcons.core.node import BuildInfo, FileNode
 from pcons.core.resolver import PendingSourceFactory
@@ -239,7 +240,7 @@ class TarfileBuilder:
         Returns:
             ArchiveTarget representing the archive, with settable properties.
         """
-        output_path = project.path_resolver.normalize_target_path(output)
+        output_path = anchor_target_paths(env, [output])[0]
 
         # Infer compression from extension if not specified
         if compression is None:
@@ -314,7 +315,7 @@ class ZipfileBuilder:
         Returns:
             ArchiveTarget representing the archive, with settable properties.
         """
-        output_path = project.path_resolver.normalize_target_path(output)
+        output_path = anchor_target_paths(env, [output])[0]
 
         if name is None:
             name = _name_from_output(output, [".zip"])

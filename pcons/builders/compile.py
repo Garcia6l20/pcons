@@ -43,7 +43,7 @@ class ProgramBuilder:
         project: Project,
         name: str,
         env: Environment,
-        sources: Sequence[str | Path | Node] | None = None,
+        sources: Sequence[str | Path | Node | Target] | None = None,
         depends: Sequence[Target | Node | Path | str] | None = None,
         defined_at: SourceLocation | None = None,
     ) -> Target:
@@ -98,7 +98,7 @@ class StaticLibraryBuilder:
         project: Project,
         name: str,
         env: Environment,
-        sources: Sequence[str | Path | Node] | None = None,
+        sources: Sequence[str | Path | Node | Target] | None = None,
         depends: Sequence[Target | Node | Path | str] | None = None,
         defined_at: SourceLocation | None = None,
     ) -> Target:
@@ -150,7 +150,7 @@ class SharedLibraryBuilder:
         project: Project,
         name: str,
         env: Environment,
-        sources: Sequence[str | Path | Node] | None = None,
+        sources: Sequence[str | Path | Node | Target] | None = None,
         depends: Sequence[Target | Node | Path | str] | None = None,
         defined_at: SourceLocation | None = None,
     ) -> Target:
@@ -202,7 +202,7 @@ class ObjectLibraryBuilder:
         project: Project,
         name: str,
         env: Environment,
-        sources: Sequence[str | Path | Node] | None = None,
+        sources: Sequence[str | Path | Node | Target] | None = None,
         depends: Sequence[Target | Node | Path | str] | None = None,
         defined_at: SourceLocation | None = None,
     ) -> Target:

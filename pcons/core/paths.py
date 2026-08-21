@@ -10,9 +10,15 @@ PathResolver provides centralized path handling where:
 
 from __future__ import annotations
 
+import logging
 import os
-import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pcons.util.source_location import SourceLocation
+
+logger = logging.getLogger(__name__)
 
 
 class PathResolver:
@@ -42,42 +48,77 @@ class PathResolver:
         return PathResolver(self.project_root / subdir, self.build_dir / subdir)
 
     def normalize_target_path(
-        self, path: Path | str, *, target_name: str | None = None
+        self,
+        path: Path | str,
+        *,
+        target_name: str | None = None,
+        warn_at: SourceLocation | None = None,
+        build_dir: Path | None = None,
     ) -> Path:
         """Normalize a target (output) path to be relative to build_dir.
 
-        A relative path that starts with the build_dir prefix warns but is
-        kept as-is.
+        A relative path that starts with the build_dir prefix has the prefix
+        absorbed, once: ``build_dir / "foo.h"`` and ``"foo.h"`` both mean
+        ``<build_dir>/foo.h``, so targets may be written from the project
+        root or from the build directory interchangeably. A file in a
+        literal subdirectory that happens to share the build directory's
+        name is written with the prefix twice.
+
+        With *warn_at*, the absorption is announced, blamed on that location.
+        Callers pass it for hand-typed string targets, where the text may
+        have meant that literal subdirectory; paths built by ``build_dir /``
+        arithmetic are unambiguous and stay quiet.
+
+        *build_dir* overrides the base directory (still relative to the
+        project root) for callers that anchor somewhere other than this
+        resolver's own build_dir, e.g. a sub-project's offset directory.
         """
+        if build_dir is None:
+            bd, resolved_bd = self.build_dir, self._resolved_build_dir
+        elif build_dir.is_absolute():
+            bd, resolved_bd = build_dir, build_dir.resolve()
+        else:
+            bd, resolved_bd = build_dir, (self.project_root / build_dir).resolve()
+
         path_str = str(path).replace("\\", "/")
         path_obj = Path(path_str)
 
         if path_obj.is_absolute():
             try:
-                return path_obj.relative_to(self._resolved_build_dir)
+                return path_obj.relative_to(resolved_bd)
             except ValueError:
                 # Not under build_dir - external output
                 return path_obj
 
-        # A build_dir prefix on a relative path is almost always a mistake:
-        # target paths are build-dir-relative, so "build/foo" would become
-        # "build/build/foo".
-        bd_parts = self.build_dir.parts
+        bd_parts = bd.parts
         parts = path_obj.parts
         if bd_parts and parts[: len(bd_parts)] == bd_parts:
-            suggested = "/".join(parts[len(bd_parts) :])
-            build_dir_str = str(self.build_dir)
-            context = f" (target '{target_name}')" if target_name else ""
-            warnings.warn(
-                f"Target path '{path}'{context} starts with build directory "
-                f"'{build_dir_str}'. "
-                f"This will create '{build_dir_str}/{path}' inside the build "
-                f"directory. Target paths are relative to build_dir, so use "
-                f"'{suggested}' instead of '{path}'.",
-                UserWarning,
-                stacklevel=3,  # Skip normalize_target_path and caller
+            absorbed = (
+                Path(*parts[len(bd_parts) :]) if parts[len(bd_parts) :] else (Path("."))
             )
-            return path_obj
+            # A doubled prefix is the explicit form the warning itself
+            # recommends for a literal same-named subdirectory: quiet.
+            if warn_at is not None and absorbed.parts[: len(bd_parts)] != bd_parts:
+                build_dir_str = "/".join(bd_parts)
+                context = f" (target '{target_name}')" if target_name else ""
+                logger.warning(
+                    "%s: target path '%s'%s: the leading '%s/' is read as the "
+                    "build directory prefix, so the file lands at '%s' inside "
+                    "the build directory, not in a '%s' subdirectory of it. "
+                    "For the latter, write the prefix twice: '%s/%s'. To say "
+                    "the same thing without the ambiguity, drop the prefix: "
+                    "'%s'.",
+                    warn_at,
+                    path_str,
+                    context,
+                    build_dir_str,
+                    absorbed,
+                    bd_parts[-1],
+                    build_dir_str,
+                    path_str,
+                    absorbed,
+                )
+            return absorbed
 
         return path_obj
 

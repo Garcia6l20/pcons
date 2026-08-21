@@ -1,6 +1,6 @@
 # Pcons User Guide <small>v{{ version }}</small>
 
-Pcons is a Python-based build system that generates [Ninja](https://ninja-build.org/) build files for C/C++ projects. It combines some of the best ideas from SCons and CMake: Python as the configuration language, environments with tools, and a fast generator architecture with proper dependency tracking.
+Pcons is a general-purpose software build system. It constructs a dependency graph of all your sources and targets and commands to build the targets, and generates [Ninja](https://ninja-build.org/) build files (or Makefiles or XCode projects). Its configuration language is python, and the tool itself is written in python. It combines some of the best ideas from SCons and CMake: Python as the configuration language, environments with toolchains and tools, and a fast generator architecture with proper dependency tracking.
 
 ## Why Pcons?
 
@@ -818,7 +818,7 @@ env.use(description, system=True)
 
 `system=` is off by default, and deliberately so: `-isystem` on a directory the compiler already searches — which is what a system or pkg-config prefix usually is — reorders the include search and can break the standard library. Reach for it on prefixes owned by a package manager or a fetched source tree. Packages fetched by `pcons-fetch` are already recorded that way, and opt out per package with `system = false` in `deps.toml`.
 
-A package that spells `-isystem` in its pkg-config `Cflags` needs no argument: both the pkg-config and Conan finders read it into `system_include_dirs`, so MSVC gets `/external:I` rather than a flag it doesn't understand.
+A package that uses  `-isystem` in its pkg-config `Cflags` needs also works: both the pkg-config and Conan finders read it into `system_include_dirs`, so MSVC gets `/external:I` rather than a flag it doesn't understand.
 
 To systemize a target someone else created, `make_includes_system()` moves its include dirs in place:
 
@@ -2441,9 +2441,22 @@ env.Command(
 )
 ```
 
-This is the one place in pcons where paths are not relative to the project root — `sources=` and `target=` are, a command's are not — so it is worth stating plainly: a *relative* path inside a command is looked for under the build directory. `"tools/gen.pl"` will not be found. Write `$SRCDIR/tools/gen.pl`, or pass an absolute path (pcons rewrites those to `$topdir/...` so the build file stays relocatable), or move the whole command with `cwd=` below.
+Each of the three kinds of path has its own base. `sources=` are relative to the project root. `target=` is relative to the build directory, and a leading build-dir component is absorbed: `target=project.build_dir / "out.txt"` and `target="out.txt"` mean the same file, so targets may be written either way. (For a file in a literal subdirectory that shares the build directory's name, write the prefix twice: `project.build_dir / "build/browse_py.h"`.) The command's own tokens are the third kind, and worth stating plainly: a *relative* path inside a command is looked for under the build directory, where the command runs. `"tools/gen.pl"` will not be found. Write `$SRCDIR/tools/gen.pl`, or pass an absolute path (pcons rewrites those to `$topdir/...` so the build file stays relocatable), or move the whole command with `cwd=` below.
 
-pcons warns when a command token names a path under the build directory (`-Wl,build/libfoo.dylib`), since `project.build_dir` is relative to the project *root* and the command runs *in* the build directory — so that path resolves to `build/build/...`. Set `PCONS_WARN_BUILD_DIR_PATHS=0` on the occasion the path really is right as written.
+**To use a generated file as a source, pass the target.** `sources=` names files in the source tree, so a generated file passed the way its `target=` was — `sources=["gen/parser.c"]` — would erroneously look in the source tree. Using the proper build path works fine: `sources=[project.build_dir / "gen/parser.c"]`. That will also correctly add the dependency. Passing the target is even better; no path to keep in sync:
+
+```python
+parser = env.Command(
+    target="gen/parser.c",
+    source="grammar.y",
+    command="bison -o $TARGET $SOURCE",
+)
+project.Program("app", env, sources=["src/main.c", parser])
+```
+
+A target with several outputs hands over all of them — a `.c`/`.h` pair, say. Just slice to get the one(s) you want: `parser.output_nodes[0]`.
+
+Pcons warns when a command token names a path under the build directory (`-Wl,build/libfoo.dylib`), since `project.build_dir` is relative to the project *root* and the command runs *in* the build directory — so that path resolves to `build/build/...`. Set `PCONS_WARN_BUILD_DIR_PATHS=0` on the occasion the path really is right as written.
 
 **Don't quote tokens yourself.** pcons keeps a command as a list of tokens and quotes each one for the shell it is writing for, so `command=f'"{tool}" $SOURCE'` reaches the program with the quotes still attached and it reports that no such file exists. Write it bare; a token that must contain a space goes in the list form, which isn't split on whitespace. pcons raises on a token that *starts* with a quote — a trailing one is ordinary, since `-DNAME="value"` wants its quotes delivered. When the quotes really are meant, say so with `Verbatim`:
 
@@ -2472,9 +2485,9 @@ env.Command(
 )
 ```
 
-Paths stay relative wherever they can, so `build.ninja` remains as relocatable as it was; only a directory no relative path can reach (another Windows drive) forces an absolute one. Makefiles already spell their source paths absolutely, so a moved command there is absolute throughout.
+Paths stay relative wherever they can, so `build.ninja` remains as relocatable as it was; only a directory no relative path can reach forces an absolute one. Makefiles already write their source paths absolutely, so a moved command there is absolute throughout.
 
-Don't write the `cd` into the command yourself. It looks equivalent and isn't: pcons wraps your command with steps of its own — `post_build()` commands, and the `write_if_different` stash below — that run in the build directory and name their files relative to it. A one-way `cd` strands them. `cwd=` changes back; a hand-written `cd` now fails the build rather than quietly costing you a rebuild. See `examples/60_command_cwd`.
+Don't write the `cd` into the command yourself. It looks equivalent but isn't: pcons wraps your command with steps of its own — `post_build()` commands, and the `write_if_different` stash below — that run in the build directory and name their files relative to it. A one-way `cd` strands them. `cwd=` changes back. See `examples/60_command_cwd`.
 
 **Extra dependencies with `depends=`:** Files listed in `depends=` trigger a rebuild when they change, but don't appear in `$SOURCE`/`$SOURCES`. Use this for scripts, config files, or other build-time inputs:
 

@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Tests for env.Command() functionality."""
 
+import logging
 import shlex
 import sys
 from pathlib import Path
 
 import pytest
 
+from pcons.configure.platform import get_platform
 from pcons.core.builder import GenericCommandBuilder
 from pcons.core.environment import Environment
 from pcons.core.node import FileNode
@@ -66,7 +68,7 @@ class TestGenericCommandBuilder:
 
         assert len(result) == 1
         assert isinstance(result[0], FileNode)
-        assert result[0].path == Path("output.txt")
+        assert result[0].path == Path("build/output.txt")
         assert result[0].builder is builder
 
     def test_target_depends_on_sources(self, test_project):  # noqa: F811
@@ -137,7 +139,7 @@ class TestEnvironmentCommand:
 
         assert isinstance(result, Target)
         assert len(result.output_nodes) == 1
-        assert result.output_nodes[0].path == Path("output.txt")
+        assert result.output_nodes[0].path == Path("build/output.txt")
 
     def test_command_with_multiple_sources(self, test_project):  # noqa: F811
         """Command with multiple sources."""
@@ -153,6 +155,118 @@ class TestEnvironmentCommand:
         output_node = result.output_nodes[0]
         assert len(output_node.explicit_deps) == 3
 
+    def test_target_written_from_the_project_root(self, test_project, caplog):  # noqa: F811
+        """A leading build-dir component is absorbed: build_dir / "out.txt"
+        and "out.txt" mean the same file, with the same canonical
+        (prefixed) node path. Path arithmetic is unambiguous, so quiet."""
+        env = Environment()
+        result = env.Command(target=Path("build/output.txt"), command="touch $TARGET")
+        assert result.output_nodes[0].path == Path("build/output.txt")
+        assert "build directory prefix" not in caplog.text
+
+    def test_a_hand_typed_prefix_string_warns(self, test_project, caplog):  # noqa: F811
+        """The string may have meant a literal 'build' subdirectory (the
+        ninja-port trap), so the absorption is announced — blamed on the
+        build-script line, not on pcons's own frame."""
+        env = Environment()
+        with caplog.at_level(logging.WARNING, logger="pcons.core.paths"):
+            result = env.Command(target="build/output.txt", command="touch $TARGET")
+        assert result.output_nodes[0].path == Path("build/output.txt")
+        assert "read as the build directory prefix" in caplog.text
+        assert "test_command.py" in caplog.text
+
+    def test_a_literal_build_subdirectory_is_written_explicitly(
+        self, test_project, caplog
+    ):  # noqa: F811
+        """project.build_dir / 'build/x.h' (a doubled prefix) is the quiet
+        escape hatch for a nested dir sharing the build dir's name."""
+        env = Environment()
+        result = env.Command(
+            target=Path("build/build/browse_py.h"), command="touch $TARGET"
+        )
+        assert result.output_nodes[0].path == Path("build/build/browse_py.h")
+        assert "build directory prefix" not in caplog.text
+
+    def test_a_target_in_sources_is_compiled(self, tmp_path):
+        """sources=[gen] means the files that target builds, so a generated
+        source compiles and links like any other. It used to order the build
+        and nothing more, leaving the generated file out of the link."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.c").write_text("int main(void){return 0;}\n")
+        project = Project("target_src", root_dir=tmp_path)
+        env = project.Environment(toolchain="c")
+        gen = env.Command(target="gen/helper.c", command="touch $TARGET")
+        prog = project.Program("app", env, sources=["src/main.c", gen])
+        project.resolve()
+
+        obj = get_platform().object_suffix
+        compiled = {Path(n.path).name for n in prog.intermediate_nodes}
+        assert f"helper.c{obj}" in compiled
+        assert f"main.c{obj}" in compiled
+
+    @pytest.mark.parametrize("form", ["build_dir", "literal"])
+    def test_the_real_path_to_a_generated_source_works(self, tmp_path, form):
+        """Naming a generated file where it actually is resolves to the very
+        node the command builds — same node, compiled, and ordered — so the
+        target is a convenience, not the only way in.
+
+        ``project.build_dir / ...`` is the form to reach for; a literal
+        "build/..." works too, but hard-codes a directory name ``-B`` can
+        change, so only the first is what diagnostics suggest.
+        """
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.c").write_text("int main(void){return 0;}\n")
+        project = Project("real_path", root_dir=tmp_path)
+        env = project.Environment(toolchain="c")
+        gen = env.Command(target="gen/helper.c", command="touch $TARGET")
+        named = (
+            project.build_dir / "gen/helper.c"
+            if form == "build_dir"
+            else "build/gen/helper.c"
+        )
+        prog = project.Program("app", env, sources=["src/main.c", named])
+        project.resolve()
+
+        assert project.validate() == []
+        # The same node object the command produces, not a lookalike.
+        assert gen.output_nodes[0] in prog.sources
+        obj = get_platform().object_suffix
+        assert f"helper.c{obj}" in {Path(n.path).name for n in prog.intermediate_nodes}
+
+    def test_a_source_that_means_a_target_says_so(self, tmp_path):
+        """Naming a generated file by its build-dir-relative path points into
+        the source tree, where nothing generated it. The validation error
+        names the target that does build it, rather than just the missing
+        file (the flipperzero-port trap)."""
+        project = Project("gen_src", root_dir=tmp_path)
+        env = project.Environment(toolchain="c")
+        env.Command(target="gen/hello.c", command="touch $TARGET", name="gen_hello")
+        project.Program("app", env, sources=["gen/hello.c"])
+        project.resolve()
+
+        errors = project.validate()
+        assert len(errors) == 1
+        message = str(errors[0])
+        assert (
+            "Target 'gen_hello' builds a file of that path, as 'build/gen/hello.c'"
+            in message
+        )
+        assert "pass that target itself, or use the real path" in message
+        # Written with project.build_dir, never the directory's name: that
+        # name is the -B choice, so a literal would only suit today's build.
+        assert 'sources=[project.build_dir / "gen/hello.c"]' in message
+        assert '"build/gen/hello.c"' not in message
+
+    def test_chained_commands_share_one_node(self, test_project):  # noqa: F811
+        """A Command output consumed by a later Command by its root-relative
+        path resolves to the producing node, so the chain is ordered."""
+        env = Environment()
+        a = env.Command(target="sub/a.h", command="touch $TARGET")
+        b = env.Command(
+            target="sub/b.h", source="build/sub/a.h", command="cp $SOURCE $TARGET"
+        )
+        assert b.output_nodes[0].explicit_deps[0] is a.output_nodes[0]
+
     def test_command_with_multiple_targets(self, test_project):  # noqa: F811
         """Command with multiple targets."""
         env = Environment()
@@ -165,8 +279,8 @@ class TestEnvironmentCommand:
 
         assert len(result.output_nodes) == 2
         paths = [n.path for n in result.output_nodes]
-        assert Path("output.h") in paths
-        assert Path("output.c") in paths
+        assert Path("build/output.h") in paths
+        assert Path("build/output.c") in paths
 
     def test_command_with_no_sources(self, test_project):  # noqa: F811
         """Command with no source dependencies."""

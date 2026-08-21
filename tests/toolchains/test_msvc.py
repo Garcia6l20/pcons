@@ -306,7 +306,7 @@ class TestMsvcResourceCompiler:
         assert len(result) == 1
         target = result[0]
         assert isinstance(target, FileNode)
-        assert target.path == Path("app.res")
+        assert target.path == Path("build/app.res")
 
     def test_resource_builder_no_depfile(self, test_project):  # noqa: F811
         """Resource compiler doesn't generate depfiles."""

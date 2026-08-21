@@ -360,12 +360,13 @@ class TestMsixSigning:
 
         assert len(signed.output_nodes) == 1
         declared_path = signed.output_nodes[0].path
-        assert declared_path == Path("TestApp-1.0.0.signed.msix")
+        assert declared_path == Path("build/TestApp-1.0.0.signed.msix")
 
         # The command's own output file (the last --output value) must be
-        # the same path as the declared ninja target.
+        # the declared ninja target as the command sees it: the command
+        # runs in the build directory, whose prefix the node path carries.
         command = signed.output_nodes[0]._build_info["command"]
-        assert command[command.index("--output") + 1] == str(declared_path)
+        assert command[command.index("--output") + 1] == "TestApp-1.0.0.signed.msix"
 
     def test_signed_target_input_is_unsigned_output(self, monkeypatch) -> None:
         """The sign step must consume the unsigned .msix, not itself."""

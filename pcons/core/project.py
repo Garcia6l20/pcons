@@ -1251,10 +1251,34 @@ class Project(_ProjectBuilders):
                             p = self.top.root_dir / p
                         if not p.exists():
                             errors.append(
-                                MissingSourceError(str(p), target_name=target.name)
+                                MissingSourceError(
+                                    str(p),
+                                    target_name=target.name,
+                                    produced=self._target_producing(source.path),
+                                )
                             )
 
         return errors
+
+    def _target_producing(self, source_path: Path) -> tuple[str, str, str] | None:
+        """The target building *source_path* read build-dir-relative.
+
+        Returns ``(target name, real path, path below the build dir)``. A
+        source path is project-root-relative, so a generated file named the
+        way its ``target=`` was written points into the source tree instead of
+        at the build output. Answering "which target did they mean, and where
+        is the file really" turns that into a diagnostic rather than a missing
+        file. A registry lookup, not a filesystem check: only declared outputs
+        can match.
+        """
+        if source_path.is_absolute():
+            return None
+        candidate = self.build_dir / source_path
+        for target in self.top.targets:
+            for node in target.output_nodes:
+                if isinstance(node, FileNode) and node.path == candidate:
+                    return target.name, candidate.as_posix(), source_path.as_posix()
+        return None
 
     def build_order(self) -> list[Target]:
         """Get targets in the order they should be built.
