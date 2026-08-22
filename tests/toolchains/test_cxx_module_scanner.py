@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests for the configure-time C++ module scanner API.
+"""Unit tests for the C++ module scanner API.
 
-These tests pre-canned P1689R5 JSON dicts directly into TuScanResult so the
-classification logic (is_module_provider, is_interface, logical_name,
-required_logical_names), the module-name -> file-path map, and the dyndep
-output can be exercised without invoking a real scanner.
+These tests feed pre-canned P1689R5 JSON dicts directly into TuScanResult so
+the classification logic (is_module_provider, is_interface, logical_name,
+required_logical_names), the dyndep output, and the build-time regeneration
+can be exercised without invoking a real scanner.
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ from pcons.toolchains.cxx_module_scanner import (
     _scan_workers,
     bmi_key_for_flags,
     build_keyed_entries,
-    build_module_map,
     map_module_providers,
     merge_scan_compile_flags,
     module_file_for,
+    regenerate_dyndep,
     run_scan_deps,
     run_scan_deps_gcc,
     run_scan_deps_msvc,
@@ -38,9 +38,7 @@ from pcons.toolchains.cxx_module_scanner import (
     select_std_module_flags,
     setup_module_pass,
     wire_std_into_targets,
-    write_dyndep,
     write_dyndep_entries,
-    write_dyndep_from_results,
 )
 
 
@@ -118,176 +116,390 @@ class TestModuleFileFor:
         )
 
 
-class TestBuildModuleMap:
-    def test_only_providers_appear(self) -> None:
-        results = [
-            _result("MyMod.o", provides_name="MyMod"),
-            _result("consumer.o", requires=["MyMod"]),
-        ]
-        m = build_module_map(results, "cxx_modules", ".ifc")
-        assert m == {"MyMod": "cxx_modules/MyMod.ifc"}
+class TestWriteIfChangedBehavior:
+    """write_dyndep_entries goes through _write_text_if_changed: an unchanged
+    dyndep must keep its mtime so ninja's restat prunes downstream work."""
 
-    def test_partitions_get_dash_filename(self) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc"),
-            _result("Constants.o", provides_name="Calc:Constants"),
-            _result("Helpers.o", provides_name="Calc:Helpers", is_interface=False),
-        ]
-        m = build_module_map(results, "mods", ".ifc")
-        assert m == {
-            "Calc": "mods/Calc.ifc",
-            "Calc:Constants": "mods/Calc-Constants.ifc",
-            "Calc:Helpers": "mods/Calc-Helpers.ifc",
-        }
-
-
-class TestWriteDyndep:
-    def test_full_partition_graph(self, tmp_path: Path) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc", requires=["Calc:Constants"]),
-            _result("Constants.o", provides_name="Calc:Constants"),
-            _result("Helpers.o", provides_name="Calc:Helpers", is_interface=False),
-            _result(
-                "main.o",
-                requires=["Calc"],
-            ),
-        ]
-        m = build_module_map(results, "mods", ".pcm")
-        out = tmp_path / "deps.dyndep"
-        write_dyndep_from_results(results, m, out)
-
-        text = out.read_text()
-        assert text.startswith("ninja_dyndep_version = 1")
-        # Provides are emitted as implicit outputs; requires as implicit inputs.
-        assert "build Calc.o | mods/Calc.pcm: dyndep | mods/Calc-Constants.pcm" in text
-        assert "build Constants.o | mods/Calc-Constants.pcm: dyndep" in text
-        assert "build Helpers.o | mods/Calc-Helpers.pcm: dyndep" in text
-        assert "build main.o: dyndep | mods/Calc.pcm" in text
-
-    def test_unresolved_requires_dropped(self, tmp_path: Path) -> None:
-        # If a required logical name has no provider in the result set
-        # (e.g. `std` before std-module support is wired up), it must be
-        # silently dropped rather than emitted as an unbuildable dep.
-        results = [_result("user.o", requires=["std"])]
-        m = build_module_map(results, "mods", ".ifc")
-        out = tmp_path / "deps.dyndep"
-        write_dyndep_from_results(results, m, out)
-        assert "std" not in out.read_text()
+    ENTRIES = [
+        ("Calc.o", ["mods/Calc.pcm"], ["mods/Calc-Constants.pcm"]),
+        ("Constants.o", ["mods/Calc-Constants.pcm"], []),
+    ]
 
     def test_write_if_unchanged_keeps_mtime(self, tmp_path: Path) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc", requires=["Calc:Constants"]),
-            _result("Constants.o", provides_name="Calc:Constants"),
-        ]
-        m = build_module_map(results, "mods", ".pcm")
         out = tmp_path / "deps.dyndep"
-
-        write_dyndep_from_results(results, m, out)
+        write_dyndep_entries(self.ENTRIES, out)
         first_mtime = out.stat().st_mtime_ns
-
-        # Re-emitting identical content must not rewrite the file.
-        write_dyndep_from_results(results, m, out)
-        second_mtime = out.stat().st_mtime_ns
-
-        assert first_mtime == second_mtime
+        write_dyndep_entries(self.ENTRIES, out)
+        assert out.stat().st_mtime_ns == first_mtime
 
     def test_write_creates_digest_file(self, tmp_path: Path) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc"),
-        ]
-        m = build_module_map(results, "mods", ".pcm")
         out = tmp_path / "deps.dyndep"
-
-        write_dyndep_from_results(results, m, out)
-
+        write_dyndep_entries(self.ENTRIES, out)
         digest_file = tmp_path / "deps.dyndep.sha256"
         assert digest_file.exists()
         assert len(digest_file.read_bytes()) == 32
 
     def test_stale_digest_same_content_rewrites(self, tmp_path: Path) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc"),
-        ]
-        m = build_module_map(results, "mods", ".pcm")
         out = tmp_path / "deps.dyndep"
         digest_file = tmp_path / "deps.dyndep.sha256"
-
-        write_dyndep_from_results(results, m, out)
+        write_dyndep_entries(self.ENTRIES, out)
         first_content = out.read_text(encoding="utf-8")
 
         digest_file.write_bytes(b"\x00" * 32)
-        write_dyndep_from_results(results, m, out)
+        write_dyndep_entries(self.ENTRIES, out)
 
         assert out.read_text(encoding="utf-8") == first_content
         assert digest_file.read_bytes() != b"\x00" * 32
 
     def test_stale_digest_different_size_rewrites(self, tmp_path: Path) -> None:
-        results = [
-            _result("Calc.o", provides_name="Calc"),
-        ]
-        m = build_module_map(results, "mods", ".pcm")
         out = tmp_path / "deps.dyndep"
         digest_file = tmp_path / "deps.dyndep.sha256"
-
-        write_dyndep_from_results(results, m, out)
+        write_dyndep_entries(self.ENTRIES, out)
         out.write_text("x\n", encoding="utf-8")
         digest_file.write_bytes(b"bad\n")
 
-        write_dyndep_from_results(results, m, out)
+        write_dyndep_entries(self.ENTRIES, out)
 
         assert out.read_text(encoding="utf-8").startswith("ninja_dyndep_version = 1")
         assert len(digest_file.read_bytes()) == 32
 
-    def test_deterministic_output_with_result_reordering(self, tmp_path: Path) -> None:
-        base_results = [
-            _result("Calc.o", provides_name="Calc", requires=["Calc:Constants"]),
-            _result("Constants.o", provides_name="Calc:Constants"),
-            _result("main.o", requires=["Calc"]),
-        ]
-        module_map = build_module_map(base_results, "mods", ".pcm")
-
+    def test_deterministic_output_with_entry_reordering(self, tmp_path: Path) -> None:
         out_a = tmp_path / "a.dyndep"
         out_b = tmp_path / "b.dyndep"
-
-        write_dyndep_from_results(base_results, module_map, out_a)
-        write_dyndep_from_results(list(reversed(base_results)), module_map, out_b)
-
+        write_dyndep_entries(self.ENTRIES, out_a)
+        write_dyndep_entries(list(reversed(self.ENTRIES)), out_b)
         assert out_a.read_text(encoding="utf-8") == out_b.read_text(encoding="utf-8")
 
-    def test_fallback_to_manifest_mod_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+
+def _p1689(
+    obj_rel: str,
+    *,
+    provides_name: str | None = None,
+    requires: list[str] | None = None,
+) -> dict:
+    rule: dict = {"primary-output": obj_rel}
+    if provides_name is not None:
+        rule["provides"] = [{"logical-name": provides_name, "is-interface": True}]
+    if requires:
+        rule["requires"] = [{"logical-name": ln} for ln in requires]
+    return {"rules": [rule]}
+
+
+class TestRegenerateDyndep:
+    """The build-time half: re-scan the manifest's TUs, rewrite the dyndep."""
+
+    @staticmethod
+    def _manifest(tus: list[dict], **overrides: object) -> dict:
+        manifest: dict = {
+            "version": 1,
+            "scanner": "scanner",
+            "scanner_style": "clang",
+            "moddir": "mods",
+            "bmi_ext": ".pcm",
+            "std_logicals": [],
+            "tus": tus,
+        }
+        manifest.update(overrides)
+        return manifest
+
+    @staticmethod
+    def _fake_scans(
+        monkeypatch: pytest.MonkeyPatch, by_src: dict[str, dict | None]
     ) -> None:
-        # Simulate scanner failure for an interface TU: write_dyndep should
-        # still emit the manifest-provided module file as an implicit output.
-        def _scan_fail(
-            scanner: str,
-            compiler: str,
-            compile_flags: list[str],
-            src: str,
-            obj: str,
-        ) -> None:
-            return None
+        def fake(specs, scanner, scanner_style="clang", cache=None):
+            # Keyed as POSIX so the fixtures' "/src/..." paths match the
+            # backslashed str() a Path gets on Windows.
+            return [TuScanResult(spec=s, p1689=by_src[s.src.as_posix()]) for s in specs]
 
         monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.run_scan_deps", _scan_fail
+            "pcons.toolchains.cxx_module_scanner.scan_translation_units", fake
         )
 
-        out = tmp_path / "deps.dyndep"
-        manifest = [
+    def test_writes_keyed_entries_and_depfile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._fake_scans(
+            monkeypatch,
             {
-                "src": str(tmp_path / "MyMod.cppm"),
-                "obj": "obj/MyMod.o",
-                "is_module_interface": True,
-                "pcm": "mods/MyMod.pcm",
-                "compiler": "clang++",
-                "compile_flags": ["-std=c++20"],
-            }
-        ]
+                "/src/mod.cppm": _p1689("mod.o", provides_name="Mod"),
+                "/src/main.cpp": _p1689("main.o", requires=["Mod"]),
+            },
+        )
+        manifest = self._manifest(
+            [
+                {"src": "/src/mod.cppm", "obj": "mod.o", "key": "k1", "flags": []},
+                {"src": "/src/main.cpp", "obj": "main.o", "key": "k1", "flags": []},
+            ]
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 0
 
-        write_dyndep(manifest, "mods", str(out), "clang-scan-deps", "clang")
-        text = out.read_text(encoding="utf-8")
-        assert "ninja_dyndep_version = 1" in text
-        assert "build obj/MyMod.o | mods/MyMod.pcm: dyndep" in text
+        text = (tmp_path / "out.dyndep").read_text(encoding="utf-8")
+        assert "build mod.o | mods/k1/Mod.pcm: dyndep" in text
+        assert "build main.o: dyndep | mods/k1/Mod.pcm" in text
+        depfile = (tmp_path / "out.dyndep.d").read_text(encoding="utf-8")
+        assert depfile.startswith("out.dyndep:")
+        assert "/src/mod.cppm" in depfile
+        assert "/src/main.cpp" in depfile
+
+    def test_fixed_entries_are_not_rescanned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._fake_scans(
+            monkeypatch, {"/src/main.cpp": _p1689("main.o", requires=["std"])}
+        )
+        manifest = self._manifest(
+            [
+                {
+                    "obj": "mods/std.o",
+                    "key": "k1",
+                    "p1689": _p1689("mods/std.o", provides_name="std"),
+                },
+                {"src": "/src/main.cpp", "obj": "main.o", "key": "k1", "flags": []},
+            ],
+            std_logicals=["std"],
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 0
+        text = (tmp_path / "out.dyndep").read_text(encoding="utf-8")
+        assert "build mods/std.o | mods/k1/std.pcm: dyndep" in text
+        assert "build main.o: dyndep | mods/k1/std.pcm" in text
+
+    def test_failed_scan_keeps_previous_dyndep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out.dyndep").write_text("previous", encoding="utf-8")
+        self._fake_scans(monkeypatch, {"/src/main.cpp": None})
+        manifest = self._manifest(
+            [{"src": "/src/main.cpp", "obj": "main.o", "key": "k1", "flags": []}]
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 1
+        assert (tmp_path / "out.dyndep").read_text(encoding="utf-8") == "previous"
+        assert "could not scan" in capsys.readouterr().err
+
+    def test_new_std_import_asks_for_a_reconfigure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        # A header edit adds `import std;` after configure: only pcons can
+        # synthesize the std module build, so the edge says so and refuses.
+        monkeypatch.chdir(tmp_path)
+        self._fake_scans(
+            monkeypatch, {"/src/main.cpp": _p1689("main.o", requires=["std"])}
+        )
+        manifest = self._manifest(
+            [{"src": "/src/main.cpp", "obj": "main.o", "key": "k1", "flags": []}]
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 1
+        assert "Run pcons" in capsys.readouterr().err
+
+    def test_provider_collision_fails_loudly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._fake_scans(
+            monkeypatch,
+            {
+                "/src/a.cppm": _p1689("a.o", provides_name="Mod"),
+                "/src/b.cppm": _p1689("b.o", provides_name="Mod"),
+            },
+        )
+        manifest = self._manifest(
+            [
+                {"src": "/src/a.cppm", "obj": "a.o", "key": "k1", "flags": []},
+                {"src": "/src/b.cppm", "obj": "b.o", "key": "k1", "flags": []},
+            ]
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 1
+        assert "two different objects" in capsys.readouterr().err
+
+    def test_external_imports_pass_through_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._fake_scans(
+            monkeypatch,
+            {"/src/main.cpp": _p1689("main.o", requires=["vendor.mod"])},
+        )
+        manifest = self._manifest(
+            [{"src": "/src/main.cpp", "obj": "main.o", "key": "k1", "flags": []}]
+        )
+        assert regenerate_dyndep(manifest, "out.dyndep") == 0
+        text = (tmp_path / "out.dyndep").read_text(encoding="utf-8")
+        assert "vendor" not in text
+
+
+class TestMsvcSourceDependencies:
+    """cl reports what a TU reads via /sourceDependencies in the scan
+    invocation; an unknown format version is not trusted."""
+
+    @staticmethod
+    def _fake_cl(monkeypatch: pytest.MonkeyPatch, deps_payload: str) -> None:
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **_kw):
+            # cmd = [cl, /scanDependencies, <p1689>, /sourceDependencies,
+            #        <deps>, ...flags, src] -- write both output files.
+            Path(cmd[2]).write_text('{"version": 1, "rules": []}', encoding="utf-8")
+            Path(cmd[4]).write_text(deps_payload, encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "pcons.toolchains.cxx_module_scanner.subprocess.run", fake_run
+        )
+
+    def test_includes_come_back_as_prerequisites(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        self._fake_cl(
+            monkeypatch,
+            json.dumps(
+                {
+                    "Version": "1.2",
+                    "Data": {
+                        "Source": "C:/src/m.cpp",
+                        "Includes": ["C:/inc/a.hpp", "C:/inc/b.hpp"],
+                    },
+                }
+            ),
+        )
+        prereqs: list[str] = []
+        p1689 = run_scan_deps_msvc("cl.exe", [], "C:/src/m.cpp", prereqs_out=prereqs)
+        assert p1689 == {"version": 1, "rules": []}
+        assert prereqs == ["C:/src/m.cpp", "C:/inc/a.hpp", "C:/inc/b.hpp"]
+
+    def test_an_unknown_version_is_not_trusted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A parseable-but-unknown layout could yield an incomplete list,
+        which would go stale silently; no prerequisites means no caching."""
+        import json
+
+        self._fake_cl(
+            monkeypatch,
+            json.dumps(
+                {
+                    "Version": "2.0",
+                    "Data": {
+                        "Source": "C:/src/m.cpp",
+                        "Includes": ["C:/inc/a.hpp"],
+                    },
+                }
+            ),
+        )
+        prereqs: list[str] = []
+        p1689 = run_scan_deps_msvc("cl.exe", [], "C:/src/m.cpp", prereqs_out=prereqs)
+        assert p1689 is not None
+        assert prereqs == []
+
+
+class TestFinishModulePassScanEdge:
+    """finish_module_pass defers the dyndep file to a build-time scan edge."""
+
+    def test_dyndep_edge_wiring(self, tmp_path: Path) -> None:
+        import json
+        from types import SimpleNamespace
+
+        from pcons.core.node import FileNode
+        from pcons.core.project import Project
+        from pcons.core.subst import PathToken
+        from pcons.toolchains.cxx_module_scanner import (
+            MANIFEST_FILE,
+            ModulePassSetup,
+            finish_module_pass,
+        )
+
+        project = Project("t", root_dir=tmp_path, build_dir="build")
+        build_dir = tmp_path / "build"
+        build_dir.mkdir(exist_ok=True)
+        registered: list = []
+        env = SimpleNamespace(register_node=registered.append)
+
+        mod_obj = FileNode("build/obj/mod.cppm.o")
+        mod_obj._build_info = {}
+        main_obj = FileNode("build/obj/main.cpp.o")
+        main_obj._build_info = {}
+        setup = ModulePassSetup(
+            cxx_module_pairs=[(Path("/src/mod.cppm"), mod_obj)],
+            cxx_pairs=[(Path("/src/main.cpp"), main_obj)],
+            build_dir=build_dir,
+            moddir="cxx_modules",
+            dyndep_path=build_dir / "cxx_modules.dyndep",
+            dyndep_rel="cxx_modules.dyndep",
+            first_env=env,
+            cxx_tool=None,
+            compiler_cmd="g++",
+            base_flags=["-std=c++20"],
+        )
+        spec_mod = TuScanSpec(
+            src=Path("/src/mod.cppm"), obj_rel="obj/mod.cppm.o", compiler="g++"
+        )
+        spec_main = TuScanSpec(
+            src=Path("/src/main.cpp"), obj_rel="obj/main.cpp.o", compiler="g++"
+        )
+        setup.spec_to_obj = {id(spec_mod): mod_obj, id(spec_main): main_obj}
+        setup.obj_key = {id(mod_obj): "k1", id(main_obj): "k1"}
+        results = [
+            TuScanResult(
+                spec=spec_mod, p1689=_p1689("obj/mod.cppm.o", provides_name="Mod")
+            ),
+            TuScanResult(
+                spec=spec_main, p1689=_p1689("obj/main.cpp.o", requires=["Mod"])
+            ),
+        ]
+        provider_obj = map_module_providers(
+            results, setup.spec_to_obj, setup.obj_key, "cxx_modules", ".gcm"
+        )
+
+        finish_module_pass(
+            project,
+            setup,
+            results,
+            provider_obj,
+            {},
+            ".gcm",
+            scanner="g++",
+            scanner_style="gcc",
+        )
+
+        # The manifest is the configure-time artifact; the dyndep is not.
+        manifest = json.loads((build_dir / MANIFEST_FILE).read_text())
+        assert manifest["scanner"] == "g++"
+        assert manifest["scanner_style"] == "gcc"
+        assert manifest["bmi_ext"] == ".gcm"
+        assert {tu["obj"] for tu in manifest["tus"]} == {
+            "obj/mod.cppm.o",
+            "obj/main.cpp.o",
+        }
+        assert all(tu["key"] == "k1" and "src" in tu for tu in manifest["tus"])
+        assert not (build_dir / "cxx_modules.dyndep").exists()
+
+        # The dyndep node carries a registered build edge with a depfile,
+        # gcc-style deps, and restat, and every object waits on it.
+        dyndep_node = project.node(setup.dyndep_path)
+        assert dyndep_node in registered
+        bi = dyndep_node._build_info
+        assert bi is not None
+        command = bi["command"]
+        assert command[1:6] == [
+            "-m",
+            "pcons.toolchains.cxx_module_scanner",
+            "--manifest",
+            MANIFEST_FILE,
+            "--out",
+        ]
+        assert bi["depfile"] == PathToken(suffix=".d")
+        assert bi["deps_style"] == "gcc"
+        assert bi["restat"] is True
+        source_paths = {str(node.path) for node in bi["sources"]}
+        assert str(project.node(Path("/src/mod.cppm")).path) in source_paths
+        assert str(project.node(build_dir / MANIFEST_FILE).path) in source_paths
+
+        for obj in (mod_obj, main_obj):
+            assert obj._build_info["dyndep"] == "cxx_modules.dyndep"
+            assert dyndep_node in obj.implicit_deps
 
 
 class _FakeCxxNamespace:
@@ -376,10 +588,10 @@ class _RecordingProject:
 class TestSetupModulePassConfigureDeps:
     """Every scanned source must join the generated build files' regen edge.
 
-    The dyndep file is written once, at configure time, from what each TU
-    imports. A TU that gains an `import` and is built without reconfiguring
-    gets an empty dyndep entry, so ninja is free to compile it before the
-    module it imports and it reads whatever BMI the last build left behind.
+    What a TU provides or imports drives flag injection, and only a pcons
+    run can change flags — the build-time scan edge covers the dyndep, but
+    an `export module` added to a TU without reconfiguring would compile
+    without its module flags.
     """
 
     def test_module_and_plain_sources_are_registered(self, tmp_path: Path) -> None:
@@ -575,7 +787,7 @@ class TestScanTranslationUnitsCache:
     """A TU whose prerequisites are untouched must not reach the compiler.
 
     `ScanCache` is covered on its own in test_scan_cache.py; what is checked
-    here is the wiring: that a hit skips the scan, that only the GCC style
+    here is the wiring: that a hit skips the scan, that every scanner style
     consults the cache, and that a result with nothing to invalidate against
     is not stored.
     """
@@ -701,13 +913,21 @@ class TestScanTranslationUnitsCache:
         assert len(scanned) == 2
         assert not (tmp_path / CACHE_FILE).exists()
 
-    def test_the_msvc_style_does_not_cache_either(
+    def test_the_msvc_style_caches_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """cl reports what it read via /sourceDependencies, so it caches."""
         scanned: list[str] = []
 
-        def _scan(compiler: str, flags: list[str], src: str) -> dict[str, object]:
+        def _scan(
+            compiler: str,
+            flags: list[str],
+            src: str,
+            prereqs_out: list[str] | None = None,
+        ) -> dict[str, object]:
             scanned.append(src)
+            if prereqs_out is not None:
+                prereqs_out.append(src)
             return {"rules": [{"primary-output": "x.obj"}]}
 
         monkeypatch.setattr(
@@ -718,19 +938,26 @@ class TestScanTranslationUnitsCache:
         self._pass(specs, "cl.exe", "msvc", tmp_path)
         self._pass(specs, "cl.exe", "msvc", tmp_path)
 
-        assert len(scanned) == 4
-        assert not (tmp_path / CACHE_FILE).exists()
+        assert len(scanned) == 2
+        assert (tmp_path / CACHE_FILE).exists()
 
-    def test_only_the_gcc_style_caches(
+    def test_the_clang_style_caches_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """clang-scan-deps and cl.exe do not report what they read."""
+        """clang-scan-deps reports what it read via a make-format pass."""
         scanned: list[str] = []
 
         def _scan(
-            scanner: str, compiler: str, flags: list[str], src: str, obj: str
+            scanner: str,
+            compiler: str,
+            flags: list[str],
+            src: str,
+            obj: str,
+            prereqs_out: list[str] | None = None,
         ) -> dict[str, object]:
             scanned.append(src)
+            if prereqs_out is not None:
+                prereqs_out.append(src)
             return {"rules": [{"primary-output": obj}]}
 
         monkeypatch.setattr("pcons.toolchains.cxx_module_scanner.run_scan_deps", _scan)
@@ -739,8 +966,35 @@ class TestScanTranslationUnitsCache:
         self._pass(specs, "clang-scan-deps", "clang", tmp_path)
         self._pass(specs, "clang-scan-deps", "clang", tmp_path)
 
-        assert len(scanned) == 4
-        assert not (tmp_path / CACHE_FILE).exists()
+        assert len(scanned) == 2
+        assert (tmp_path / CACHE_FILE).exists()
+
+    def test_styles_do_not_share_answers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each style's recipe is its own cache key: a gcc answer must not
+        be served to a clang question about the same TU."""
+        gcc_scanned = self._counting_scanner(monkeypatch)
+        specs = self._specs(tmp_path, 1)
+        self._pass(specs, "unused", "gcc", tmp_path)
+        assert len(gcc_scanned) == 1
+
+        clang_scanned: list[str] = []
+
+        def _scan(
+            scanner: str,
+            compiler: str,
+            flags: list[str],
+            src: str,
+            obj: str,
+            prereqs_out: list[str] | None = None,
+        ) -> dict[str, object]:
+            clang_scanned.append(src)
+            return {"rules": [{"primary-output": obj}]}
+
+        monkeypatch.setattr("pcons.toolchains.cxx_module_scanner.run_scan_deps", _scan)
+        self._pass(specs, "clang-scan-deps", "clang", tmp_path)
+        assert len(clang_scanned) == 1
 
 
 class TestScanWorkers:

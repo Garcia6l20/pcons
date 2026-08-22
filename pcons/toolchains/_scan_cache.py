@@ -43,11 +43,23 @@ def parse_depfile(text: str) -> list[str]:
     escapes a literal space in a path as ``\\ ``, which is the common case on
     Windows. Splitting on whitespace would turn one path into two, and two
     missing files into a permanent cache miss.
+
+    A ``:`` separates a rule's target only when whitespace (or the end of the
+    file) follows, so a Windows drive letter (``C:/x.obj``) stays inside its
+    path. A newline that is not a continuation starts a new rule, whose
+    target is dropped like the first: compilers emit multi-rule depfiles when
+    modules are involved, and a swallowed target would come back as a
+    prerequisite that can never exist.
     """
     prereqs: list[str] = []
     current: list[str] = []
     index = 0
     seen_colon = False
+
+    def flush() -> None:
+        if current:
+            prereqs.append("".join(current))
+            current.clear()
 
     while index < len(text):
         char = text[index]
@@ -63,22 +75,33 @@ def parse_depfile(text: str) -> list[str]:
                 index += 1
                 continue
 
-        if char == ":" and not seen_colon:
-            # Everything before the first unescaped colon is the target.
-            seen_colon = True
-            current = []
+        if char == "$" and index < len(text) and text[index] == "$":
+            current.append("$")  # make's own dollar escaping
+            index += 1
             continue
 
-        if char in " \t\n":
-            if current:
-                prereqs.append("".join(current))
-                current = []
+        if (
+            char == ":"
+            and not seen_colon
+            and (index >= len(text) or text[index] in " \t\n")
+        ):
+            # Everything before the rule's separating colon is the target.
+            seen_colon = True
+            current.clear()
+            continue
+
+        if char == "\n":
+            flush()
+            seen_colon = False  # the next line may start a new rule
+            continue
+
+        if char in " \t":
+            flush()
             continue
 
         current.append(char)
 
-    if current:
-        prereqs.append("".join(current))
+    flush()
     return prereqs
 
 
@@ -168,6 +191,22 @@ class ScanCache:
                 return None
         p1689 = entry.get("p1689")
         return p1689 if isinstance(p1689, dict) else None
+
+    def prereqs(self, key: str) -> list[str] | None:
+        """The files the scan behind *key* read, or None if not recorded.
+
+        Unlike :meth:`get`, no staleness check: the caller wants the
+        prerequisite list itself (to declare as dependencies of whatever
+        consumed the scan), and last run's list is the right answer even
+        while one of the files is mid-edit.
+        """
+        entry = self._entries.get(key)
+        if not isinstance(entry, dict):
+            return None
+        prereqs = entry.get("prereqs")
+        if not isinstance(prereqs, list):
+            return None
+        return [p for p in prereqs if isinstance(p, str)]
 
     def put(
         self,

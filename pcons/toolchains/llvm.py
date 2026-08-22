@@ -505,12 +505,18 @@ class LlvmToolchain(UnixToolchain):
         for src, obj_node in setup.all_cxx_pairs:
             bi = getattr(obj_node, "_build_info", None)
             context = bi.get("context") if bi else None
-            compile_flags = merge_scan_compile_flags(setup.base_flags, context)
+            compile_flags = merge_scan_compile_flags(
+                setup.base_flags, context, root=project.root_dir
+            )
             specs.append(add_tu_spec(setup, src, obj_node, compile_flags, flag_spec))
 
+        from pcons.toolchains._scan_cache import ScanCache
+
+        scan_cache = ScanCache(setup.build_dir)
         results = scan_translation_units(
-            specs, scanner="clang-scan-deps", scanner_style="clang"
+            specs, scanner="clang-scan-deps", scanner_style="clang", cache=scan_cache
         )
+        scan_cache.save()
 
         # Synthesize std/std.compat module builds where imported (appended
         # to `results` so the dyndep file declares their .pcm outputs).
@@ -565,7 +571,16 @@ class LlvmToolchain(UnixToolchain):
             if modpath not in context.flags:
                 context.flags.append(modpath)
 
-        finish_module_pass(project, setup, results, provider_obj, std_obj_nodes, ".pcm")
+        finish_module_pass(
+            project,
+            setup,
+            results,
+            provider_obj,
+            std_obj_nodes,
+            ".pcm",
+            scanner="clang-scan-deps",
+            scanner_style="clang",
+        )
 
     def _inject_clang_std_module_builds(
         self,

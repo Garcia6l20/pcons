@@ -374,8 +374,8 @@ class GccToolchain(UnixToolchain):
 
         Runs GCC's p1689 scanner over the participating TUs, adds
         ``-fmodules``, synthesizes std/std.compat module builds where
-        imported, writes the dyndep file, and wires std objects into
-        importing targets' link inputs. Requires GCC 15+ (which ships
+        imported, sets up the build-time dyndep edge, and wires std objects
+        into importing targets' link inputs. Requires GCC 15+ (which ships
         ``bits/std.cc`` as part of libstdc++).
         """
         from pcons.toolchains._scan_cache import ScanCache
@@ -429,7 +429,10 @@ class GccToolchain(UnixToolchain):
             bi = getattr(obj_node, "_build_info", None)
             context = bi.get("context") if bi else None
             compile_flags = merge_scan_compile_flags(
-                setup.base_flags, context, extra_flags=(modules_flag,)
+                setup.base_flags,
+                context,
+                extra_flags=(modules_flag,),
+                root=project.root_dir,
             )
 
             # For module interfaces, insert a scan step to generate the depfile.
@@ -538,7 +541,16 @@ class GccToolchain(UnixToolchain):
             if mapper_flag and mapper_flag not in extra:
                 extra.append(mapper_flag)
 
-        finish_module_pass(project, setup, results, provider_obj, std_obj_nodes, ".gcm")
+        finish_module_pass(
+            project,
+            setup,
+            results,
+            provider_obj,
+            std_obj_nodes,
+            ".gcm",
+            scanner=setup.compiler_cmd,
+            scanner_style="gcc",
+        )
 
     def _inject_gcc_std_module_builds(
         self,

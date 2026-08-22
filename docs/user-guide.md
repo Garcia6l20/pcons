@@ -1866,7 +1866,9 @@ When a target has at least one source whose extension is in
 every C++ TU in that target at configure time, and uses the P1689R5
 output to inject the right compile flags (`/interface` vs
 `/internalPartition` on MSVC, `-fmodule-output` and `-x c++-module` on
-clang) and to produce the Ninja `dyndep` file that orders compilations.
+clang). The Ninja `dyndep` file that orders compilations is regenerated
+by a build-time scan step, so a header that gains or loses an `import`
+reorders the next build on its own; a scan cache keeps the step cheap.
 Partition units that live in `.cpp` files (interface partitions like
 `export module M:P;` or internal partitions like `module M:P;`) are
 detected from the scan output and handled correctly.

@@ -474,7 +474,7 @@ class TestMsvcModulesBmiKeying:
             lambda _s: (module_pairs, cxx_pairs),
         )
 
-        def fake_scan(specs, scanner, scanner_style):
+        def fake_scan(specs, scanner, scanner_style, cache=None):
             out = []
             for s in specs:
                 is_provider = str(s.src).endswith(".cppm")
@@ -518,12 +518,30 @@ class TestMsvcModulesBmiKeying:
         assert searchdir_of(cons26) == ifc26.rsplit("/", 1)[0]
         assert searchdir_of(cons23) != searchdir_of(cons26)
 
-        # The keyed dyndep wires each consumer to the provider in its own class.
-        dyndep = (tmp_path / "build" / "cxx_modules.dyndep").read_text()
-        assert f"build obj.lib1/consumer.cpp.obj: dyndep | {ifc23}" in dyndep
-        assert f"build obj.lib3/consumer.cpp.obj: dyndep | {ifc26}" in dyndep
-        assert f"build obj.lib1/provider.cppm.obj | {ifc23}: dyndep" in dyndep
-        assert f"build obj.lib3/provider.cppm.obj | {ifc26}: dyndep" in dyndep
+        # The scan manifest keys each consumer with the provider in its own
+        # class, so the build-time dyndep edge wires them together (dyndep
+        # content itself is covered by the regenerate_dyndep tests).
+        import json
+
+        manifest = json.loads(
+            (tmp_path / "build" / "cxx_modules.manifest.json").read_text()
+        )
+        key_of = {tu["obj"]: tu["key"] for tu in manifest["tus"]}
+        assert (
+            key_of["obj.lib1/consumer.cpp.obj"] == key_of["obj.lib1/provider.cppm.obj"]
+        )
+        assert (
+            key_of["obj.lib3/consumer.cpp.obj"] == key_of["obj.lib3/provider.cppm.obj"]
+        )
+        assert (
+            key_of["obj.lib1/provider.cppm.obj"] != key_of["obj.lib3/provider.cppm.obj"]
+        )
+        assert (
+            ifc23 == f"cxx_modules/{key_of['obj.lib1/provider.cppm.obj']}/provider.ifc"
+        )
+        assert (
+            ifc26 == f"cxx_modules/{key_of['obj.lib3/provider.cppm.obj']}/provider.ifc"
+        )
 
     def test_compatible_compiles_share_one_ifc_path(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
@@ -553,7 +571,7 @@ class TestMsvcModulesBmiKeying:
             lambda _s: (module_pairs, []),
         )
 
-        def fake_scan(specs, scanner, scanner_style):
+        def fake_scan(specs, scanner, scanner_style, cache=None):
             return [
                 SimpleNamespace(
                     spec=s,

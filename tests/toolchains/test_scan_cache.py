@@ -68,6 +68,28 @@ class TestParseDepfile:
         """Nothing guarantees the compiler ends the depfile with one."""
         assert parse_depfile("x.o: a.cpp b.hpp") == ["a.cpp", "b.hpp"]
 
+    def test_a_drive_letter_colon_stays_in_its_path(self) -> None:
+        """Only a colon before whitespace separates the target; a swallowed
+        drive letter would leave a phantom prerequisite nothing can stat."""
+        assert parse_depfile("C:/out/x.obj: C:/src/a.cpp D:/inc/b.hpp\n") == [
+            "C:/src/a.cpp",
+            "D:/inc/b.hpp",
+        ]
+
+    def test_each_rule_of_a_multi_rule_depfile_drops_its_target(self) -> None:
+        """Compilers emit multi-rule depfiles when modules are involved."""
+        assert parse_depfile("a.o: x.hpp y.hpp\nb.pcm: z.hpp\n") == [
+            "x.hpp",
+            "y.hpp",
+            "z.hpp",
+        ]
+
+    def test_make_dollar_escaping(self) -> None:
+        assert parse_depfile("x.o: a$$b.hpp\n") == ["a$b.hpp"]
+
+    def test_a_colon_ending_the_file_separates(self) -> None:
+        assert parse_depfile("x.o:") == []
+
 
 class TestCompilerBinary:
     def test_a_command_on_path_resolves_to_an_absolute_path(self) -> None:

@@ -2,45 +2,31 @@
 """C++20 module dependency scanner for Ninja dyndep.
 
 Supports three scanner styles:
-- "clang": uses clang-scan-deps (P1689R5 format); manifest uses "pcm" key
-- "msvc":  uses cl.exe /scanDependencies <file> (P1689R5 format); manifest uses "ifc" key
+- "clang": uses clang-scan-deps (P1689R5 format)
+- "msvc":  uses cl.exe /scanDependencies <file> (P1689R5 format)
 - "gcc":   uses g++ with -fdeps-format=p1689r5 and reads a deps JSON file
 
-Run as:
-    python -m pcons.toolchains.cxx_module_scanner \\
-        --manifest cxx.manifest.json \\
-        --out cxx_modules.dyndep \\
-        --mod-dir cxx_modules \\
-        --scanner clang-scan-deps \\
-        --scanner-style clang
+The scan runs twice, for two different consumers:
 
-The manifest JSON format (clang):
-    [
-      {
-        "src": "/abs/path/MyMod.cppm",
-        "obj": "obj.hello/src/MyMod.cppm.obj",
-        "is_module_interface": true,
-        "pcm": "cxx_modules/MyMod.pcm",
-        "compiler": "clang++",
-        "compile_flags": ["-std=c++20"]
-      },
-      ...
-    ]
+- At configure time, inline in each toolchain's ``after_resolve``: the scan
+  output drives flag injection (``-x c++-module``, ``/interface`` vs
+  ``/internalPartition``, keyed BMI outputs), which only configure can do —
+  Ninja dyndep can modify deps and outputs, never flags.
+- At build time, as the edge that writes ``cxx_modules.dyndep``, run as::
 
-The manifest JSON format (msvc):
-    [
-      {
-        "src": "C:/abs/path/MyMod.cppm",
-        "obj": "obj.hello/src/MyMod.cppm.obj",
-        "is_module_interface": true,
-        "ifc": "cxx_modules/MyMod.ifc",
-        "compiler": "cl.exe",
-        "compile_flags": ["/nologo", "/std:c++20"]
-      },
-      ...
-    ]
+      python -m pcons.toolchains.cxx_module_scanner \\
+          --manifest cxx_modules.manifest.json --out cxx_modules.dyndep
 
-All paths in the output are relative to the build directory (where Ninja runs).
+  from the build directory, against a manifest configure wrote. A TU's
+  import set is a function of the TU *and every header it includes*, and
+  headers are not configure dependencies — so the dyndep is recomputed
+  where header edits can re-trigger it, and a header that gains an
+  ``import`` reorders the build without re-running pcons. The scan cache
+  makes the second run cheap: a TU none of whose prerequisites changed is
+  not rescanned.
+
+All paths in the output are relative to the build directory (where Ninja
+runs).
 """
 
 from __future__ import annotations
@@ -99,12 +85,41 @@ def _write_text_if_changed(path: Path, text: str) -> None:
     digest_file.write_bytes(digest)
 
 
+def clang_scan_command(
+    scanner: str,
+    fmt: str,
+    compiler: str,
+    compile_flags: list[str],
+    src: str,
+    obj: str,
+) -> list[str]:
+    """The argv that scans one TU with clang-scan-deps, in *fmt*.
+
+    Run twice per TU: ``p1689`` for the module graph, then ``make`` for the
+    files the TU reads — clang-scan-deps emits no file inputs in its p1689
+    output, and the prerequisite list is what decides when a cached result,
+    and the dyndep built from it, go stale.
+    """
+    return [
+        scanner,
+        f"-format={fmt}",
+        "--",
+        compiler,
+        *compile_flags,
+        "-c",
+        src,
+        "-o",
+        obj,
+    ]
+
+
 def run_scan_deps(
     scanner: str,
     compiler: str,
     compile_flags: list[str],
     src: str,
     obj: str,
+    prereqs_out: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Run clang-scan-deps on a single source file and return P1689R5 JSON.
 
@@ -114,14 +129,14 @@ def run_scan_deps(
         compile_flags: List of compiler flags.
         src: Absolute path to the source file.
         obj: Object file path (relative to build dir).
+        prereqs_out: When given, extended with every file the TU reads, from
+            a second, make-format scan. Left alone when either scan fails —
+            an empty list tells the caller there is nothing to cache by.
 
     Returns:
         Parsed P1689R5 JSON dict, or None on failure.
     """
-    cmd = [scanner, "-format=p1689", "--"]
-    cmd += [compiler]
-    cmd += compile_flags
-    cmd += ["-c", src, "-o", obj]
+    cmd = clang_scan_command(scanner, "p1689", compiler, compile_flags, src, obj)
 
     try:
         result = subprocess.run(
@@ -149,7 +164,7 @@ def run_scan_deps(
         ) from e
 
     try:
-        return json.loads(result.stdout)
+        p1689 = json.loads(result.stdout)
     except json.JSONDecodeError as e:
         print(
             f"Warning: could not parse clang-scan-deps output for {src}: {e}",
@@ -157,11 +172,49 @@ def run_scan_deps(
         )
         return None
 
+    if prereqs_out is not None:
+        deps = subprocess.run(
+            clang_scan_command(scanner, "make", compiler, compile_flags, src, obj),
+            capture_output=True,
+            text=True,
+        )
+        if deps.returncode == 0:
+            prereqs_out.extend(parse_depfile(deps.stdout))
+        else:
+            logger.debug("clang-scan-deps make-format scan failed for %s", src)
+    return p1689
+
+
+def msvc_scan_command(
+    compiler: str,
+    compile_flags: list[str],
+    src: str,
+    scan_json: str,
+    deps_json: str,
+) -> list[str]:
+    """The argv that scans one TU with cl.exe.
+
+    One invocation, two outputs: ``/scanDependencies`` writes the P1689
+    module graph, ``/sourceDependencies`` the files the TU reads — the
+    latter is what decides when a cached result, and the dyndep built from
+    it, go stale.
+    """
+    return [
+        compiler,
+        "/scanDependencies",
+        scan_json,
+        "/sourceDependencies",
+        deps_json,
+        *compile_flags,
+        src,
+    ]
+
 
 def run_scan_deps_msvc(
     compiler: str,
     compile_flags: list[str],
     src: str,
+    prereqs_out: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Run cl.exe /scanDependencies on a single source file and return P1689R5 JSON.
 
@@ -169,15 +222,21 @@ def run_scan_deps_msvc(
         compiler: Path/name of cl.exe.
         compile_flags: List of compiler flags (e.g. ["/nologo", "/std:c++20"]).
         src: Absolute path to the source file.
+        prereqs_out: When given, extended with every file the TU reads. cl
+            reports them in the same invocation via ``/sourceDependencies``,
+            and they are exactly what decides whether a cached result is
+            still good. Left alone on a failed scan.
 
     Returns:
         Parsed P1689R5 JSON dict, or None on failure.
     """
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp_path = f.name
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        deps_path = f.name
 
     try:
-        cmd = [compiler, "/scanDependencies", tmp_path] + compile_flags + [src]
+        cmd = msvc_scan_command(compiler, compile_flags, src, tmp_path, deps_path)
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -190,13 +249,38 @@ def run_scan_deps_msvc(
             )
             return None
         try:
-            return json.loads(Path(tmp_path).read_text(encoding="utf-8"))
+            p1689 = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             print(
                 f"Warning: could not parse cl.exe /scanDependencies output for {src}: {e}",
                 file=sys.stderr,
             )
             return None
+        if prereqs_out is not None:
+            try:
+                data = json.loads(Path(deps_path).read_text(encoding="utf-8-sig"))
+                version = str(data.get("Version", ""))
+                if not version.startswith("1."):
+                    # An unknown layout could parse and yield an incomplete
+                    # list, which would go stale silently. Better an uncached
+                    # scan than a prerequisite list this code has never seen.
+                    logger.debug(
+                        "Unknown /sourceDependencies version %r for %s; not caching",
+                        version,
+                        src,
+                    )
+                else:
+                    payload = data.get("Data", {})
+                    found = [payload.get("Source", src) or src]
+                    includes = payload.get("Includes", [])
+                    if isinstance(includes, list):
+                        found.extend(str(p) for p in includes)
+                    prereqs_out.extend(found)
+            except (OSError, ValueError) as e:
+                # No prerequisites means no way to tell when this result goes
+                # stale, so the caller must not cache it.
+                logger.debug("No /sourceDependencies output for %s: %s", src, e)
+        return p1689
     except FileNotFoundError as e:
         raise CxxModuleScannerNotFound(
             f"MSVC compiler '{compiler}' not found on PATH.\n"
@@ -209,6 +293,7 @@ def run_scan_deps_msvc(
         ) from e
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+        Path(deps_path).unlink(missing_ok=True)
 
 
 def gcc_scan_command(
@@ -255,16 +340,23 @@ def gcc_scan_command(
     ]
 
 
-@lru_cache(maxsize=1)
-def gcc_scan_recipe() -> str:
-    """What the scan command is, with everything per-TU left out.
+@lru_cache(maxsize=3)
+def scan_recipe(scanner_style: str) -> str:
+    """What a style's scan command is, with everything per-TU left out.
 
     The scan cache keys on this, so a pcons that scans differently asks a new
     question instead of trusting an answer the old command produced. Derived
-    from the command itself rather than a hand-maintained constant: a flag
-    added above cannot be forgotten here.
+    from the commands themselves rather than hand-maintained constants: a
+    flag added there cannot be forgotten here.
     """
-    return "\0".join(gcc_scan_command("", [], "", "", "", ""))
+    if scanner_style == "gcc":
+        return "\0".join(gcc_scan_command("", [], "", "", "", ""))
+    if scanner_style == "msvc":
+        return "\0".join(msvc_scan_command("", [], "", "", ""))
+    return "\0".join(
+        clang_scan_command("", "p1689", "", [], "", "")
+        + clang_scan_command("", "make", "", [], "", "")
+    )
 
 
 def run_scan_deps_gcc(
@@ -349,13 +441,16 @@ def run_scan_deps_gcc(
 
 
 # =============================================================================
-# Configure-time API: TU scan specs, results, and dyndep generation.
+# Configure-time API: TU scan specs, results, manifest, and the dyndep edge.
 #
 # Toolchains' after_resolve() invokes the scanner inline so its output can
 # drive flag injection (e.g. /internalPartition) — Ninja dyndep can only
-# modify deps/outputs, not flags. Build-time entry points (write_dyndep,
-# main) remain for debugging and external callers.
+# modify deps/outputs, not flags. The dyndep file itself is written at build
+# time by regenerate_dyndep() (the `python -m` entry point below), so header
+# edits that change a TU's imports re-trigger it without re-running pcons.
 # =============================================================================
+
+MANIFEST_FILE = "cxx_modules.manifest.json"
 
 
 @dataclass
@@ -522,6 +617,46 @@ def select_modules_scope(
     )
 
 
+def spec_cache_key(spec: TuScanSpec, scanner_style: str) -> str:
+    """The scan cache key for one TU under one scanner style."""
+    return ScanCache.key(
+        scan_recipe(scanner_style),
+        spec.compiler,
+        spec.compile_flags,
+        str(spec.src),
+        spec.obj_rel,
+    )
+
+
+def _run_scan(
+    spec: TuScanSpec,
+    scanner: str,
+    scanner_style: str,
+    prereqs_out: list[str],
+) -> dict[str, Any] | None:
+    """Run the runner *scanner_style* names on one TU."""
+    if scanner_style == "msvc":
+        return run_scan_deps_msvc(
+            spec.compiler, spec.compile_flags, str(spec.src), prereqs_out=prereqs_out
+        )
+    if scanner_style == "gcc":
+        return run_scan_deps_gcc(
+            spec.compiler,
+            spec.compile_flags,
+            str(spec.src),
+            spec.obj_rel,
+            prereqs_out=prereqs_out,
+        )
+    return run_scan_deps(
+        scanner,
+        spec.compiler,
+        spec.compile_flags,
+        str(spec.src),
+        spec.obj_rel,
+        prereqs_out=prereqs_out,
+    )
+
+
 def _scan_one(
     spec: TuScanSpec,
     scanner: str,
@@ -531,54 +666,31 @@ def _scan_one(
     """Scan one TU with the runner its style names.
 
     With a *cache*, a TU whose every prerequisite is untouched since the last
-    run skips the compiler entirely. Only the GCC runner participates: it is
-    the one that reports what it read.
+    run skips the compiler entirely. Every runner reports what its scan read
+    (GCC via the scan's own depfile, cl via /sourceDependencies, clang via a
+    second make-format pass), so every style participates.
     """
-    if scanner_style == "msvc":
-        p1689 = run_scan_deps_msvc(spec.compiler, spec.compile_flags, str(spec.src))
-    elif scanner_style == "gcc":
-        key = (
-            None
-            if cache is None
-            else ScanCache.key(
-                gcc_scan_recipe(),
-                spec.compiler,
-                spec.compile_flags,
-                str(spec.src),
-                spec.obj_rel,
-            )
-        )
-        if cache is not None and key is not None:
-            hit = cache.get(key)
-            if hit is not None:
-                return TuScanResult(spec=spec, p1689=hit)
+    key = None if cache is None else spec_cache_key(spec, scanner_style)
+    if cache is not None and key is not None:
+        hit = cache.get(key)
+        if hit is not None:
+            return TuScanResult(spec=spec, p1689=hit)
 
-        prereqs: list[str] = []
-        started_ns = time.time_ns()
-        p1689 = run_scan_deps_gcc(
-            spec.compiler,
-            spec.compile_flags,
-            str(spec.src),
-            spec.obj_rel,
-            prereqs_out=prereqs,
-        )
-        # No prerequisites means nothing to invalidate against, so the result
-        # is used but not stored.
-        if cache is not None and key is not None and p1689 is not None and prereqs:
-            binary = compiler_binary(spec.compiler)
-            cache.put(
-                key,
-                p1689,
-                [*prereqs, binary] if binary else prereqs,
-                scan_started_ns=started_ns,
-            )
-    else:
-        p1689 = run_scan_deps(
-            scanner,
-            spec.compiler,
-            spec.compile_flags,
-            str(spec.src),
-            spec.obj_rel,
+    prereqs: list[str] = []
+    started_ns = time.time_ns()
+    p1689 = _run_scan(spec, scanner, scanner_style, prereqs)
+
+    # No prerequisites means nothing to invalidate against, so the result
+    # is used but not stored. The tool binaries ride along so an in-place
+    # upgrade invalidates the answers the old ones gave.
+    if cache is not None and key is not None and p1689 is not None and prereqs:
+        tools = {spec.compiler, scanner} - {""}
+        binaries = [b for tool in sorted(tools) if (b := compiler_binary(tool))]
+        cache.put(
+            key,
+            p1689,
+            [*prereqs, *binaries],
+            scan_started_ns=started_ns,
         )
     return TuScanResult(spec=spec, p1689=p1689)
 
@@ -624,17 +736,13 @@ def scan_translation_units(
         scanner: Path to clang-scan-deps (clang style) or cl.exe (msvc style).
         scanner_style: "clang" or "msvc".
         cache: Where results are kept between runs, and where this pass adds
-            its own. Without one every TU is rescanned. Only the GCC style
-            uses it: it is the one whose runner reports the files it read.
-            The caller owns it, so several passes share one load and one save.
+            its own. Without one every TU is rescanned. The caller owns it,
+            so several passes share one load and one save.
 
     Returns:
         One TuScanResult per spec, in order. result.p1689 is None if scanning
         that TU failed (a warning is written to stderr by the runner).
     """
-    if scanner_style != "gcc":
-        cache = None
-
     if len(specs) < 2:
         return [_scan_one(spec, scanner, scanner_style, cache) for spec in specs]
 
@@ -644,21 +752,6 @@ def scan_translation_units(
         return list(
             pool.map(lambda s: _scan_one(s, scanner, scanner_style, cache), specs)
         )
-
-
-def build_module_map(
-    results: list[TuScanResult],
-    mod_dir: str,
-    extension: str,
-) -> dict[str, str]:
-    """Build logical-name -> module-file-path map from scan results."""
-    mapping: dict[str, str] = {}
-    for r in results:
-        if r.is_module_provider:
-            mapping[r.logical_name] = module_file_for(
-                r.logical_name, mod_dir, extension
-            )
-    return mapping
 
 
 @dataclass
@@ -760,13 +853,26 @@ def merge_scan_compile_flags(
     iprefix: str = "-I",
     isysprefix: str = "-isystem",
     dprefix: str = "-D",
+    root: Path | None = None,
 ) -> list[str]:
     """Build a per-TU compile-flag list for module scanning.
 
     Starts from *base_flags*, injects *extra_flags* (deduped, e.g. GCC's
     ``-fmodules``), then appends the build context's flags (deduped),
     includes, and defines, in that order.
+
+    With *root*, relative include paths are anchored there and made
+    absolute. The scan runs twice with these flags — at configure time from
+    the project root, and again from the build directory by the dyndep
+    edge — and the scan cache keys on them, so both runs must agree on a
+    form that works from anywhere.
     """
+
+    def include_path(inc: Any) -> str:
+        if root is not None and not os.path.isabs(str(inc)):
+            return str(root / str(inc))
+        return str(inc)
+
     seen = set(base_flags)
     compile_flags = list(base_flags)
     for flag in extra_flags:
@@ -779,11 +885,11 @@ def merge_scan_compile_flags(
                 compile_flags.append(flag)
                 seen.add(flag)
         for inc in context.includes:
-            compile_flags.append(f"{iprefix}{inc}")
+            compile_flags.append(f"{iprefix}{include_path(inc)}")
         # Vendored SDK headers live here; without them the scanner can't
         # preprocess the TU it is scanning.
         for inc in getattr(context, "system_includes", ()):
-            compile_flags.append(f"{isysprefix}{inc}")
+            compile_flags.append(f"{isysprefix}{include_path(inc)}")
         for define in context.defines:
             compile_flags.append(f"{dprefix}{define}")
     return compile_flags
@@ -825,10 +931,11 @@ def setup_module_pass(
     Returns None when no environment participates. The compiler command and
     base flags come from the first participating object's environment.
 
-    Every selected source becomes a configure dependency: the dyndep file is
-    written once, here, from what each TU imports, so a source that gains or
-    loses an ``import`` has to re-run pcons before the next build or ninja
-    schedules it against a dyndep that no longer describes it.
+    Every selected source becomes a configure dependency: what a TU provides
+    or imports drives flag injection (``-x c++-module``, keyed BMI outputs),
+    which only re-running pcons can change. The dyndep file needs no such
+    help — it is regenerated at build time from a fresh scan — but the flags
+    on the compile lines are configure's alone.
     """
     cxx_module_pairs, cxx_pairs = select_modules_scope(source_obj_by_language)
     if not cxx_module_pairs and not cxx_pairs:
@@ -881,6 +988,54 @@ def add_tu_spec(
     return spec
 
 
+def write_module_manifest(
+    path: Path,
+    setup: ModulePassSetup,
+    results: list[TuScanResult],
+    std_obj_nodes: dict[str, Any],
+    bmi_ext: str,
+    scanner: str,
+    scanner_style: str,
+) -> None:
+    """Record what the build-time dyndep edge needs to redo the scan.
+
+    One entry per participating TU. Std-module entries carry their p1689
+    verbatim instead of scan inputs: what a standard-library module provides
+    depends only on the toolchain, and a toolchain change re-runs pcons (its
+    sources are configure dependencies), so re-scanning them at build time
+    would answer a question that cannot have changed.
+    """
+    std_ids = {id(node) for node in std_obj_nodes.values()}
+    tus: list[dict[str, Any]] = []
+    for r in results:
+        obj_node = setup.spec_to_obj.get(id(r.spec))
+        if obj_node is None:
+            continue
+        key = setup.obj_key[id(obj_node)]
+        if id(obj_node) in std_ids:
+            tus.append({"obj": r.spec.obj_rel, "key": key, "p1689": r.p1689})
+        else:
+            tus.append(
+                {
+                    "src": str(r.spec.src),
+                    "obj": r.spec.obj_rel,
+                    "key": key,
+                    "compiler": r.spec.compiler,
+                    "flags": list(r.spec.compile_flags),
+                }
+            )
+    manifest = {
+        "version": 1,
+        "scanner": scanner,
+        "scanner_style": scanner_style,
+        "moddir": setup.moddir,
+        "bmi_ext": bmi_ext,
+        "std_logicals": sorted(std_obj_nodes),
+        "tus": tus,
+    }
+    _write_text_if_changed(path, json.dumps(manifest, indent=1, sort_keys=True))
+
+
 def finish_module_pass(
     project: Any,
     setup: ModulePassSetup,
@@ -888,23 +1043,74 @@ def finish_module_pass(
     provider_obj: dict[tuple[str, str], Any],
     std_obj_nodes: dict[str, Any],
     bmi_ext: str,
+    scanner: str,
+    scanner_style: str,
 ) -> None:
-    """Write the keyed dyndep file and wire it into the build graph.
+    """Wire the modules pass into the build graph, deferring the dyndep.
 
-    The tail every toolchain's modules pass shares: per-key BMI dirs, dyndep
-    entries, ``dyndep`` + implicit deps on every participating object (std
-    objects included), and std objects linked into importing targets.
+    The tail every toolchain's modules pass shares: per-key BMI dirs, the
+    scan manifest, a build edge that (re)writes the dyndep file, ``dyndep``
+    + implicit deps on every participating object (std objects included),
+    and std objects linked into importing targets.
+
+    The dyndep file is written by the edge, not here: a TU's imports depend
+    on every header it includes, and headers are not configure dependencies,
+    so a header that gains an ``import`` must be able to reorder the build
+    without a reconfigure. The edge re-runs this module against the
+    manifest; its depfile carries what the scans read, and the scan cache
+    keeps the re-run cheap.
     """
     for key in set(setup.obj_key.values()):
         (setup.build_dir / setup.moddir / key).mkdir(parents=True, exist_ok=True)
 
-    entries = build_keyed_entries(
+    # The same consistency checks the build-time edge performs, but a
+    # failure here is a configure error with context, not a broken build
+    # later. The entries themselves are recomputed by the edge.
+    build_keyed_entries(
         results, setup.spec_to_obj, setup.obj_key, provider_obj, setup.moddir, bmi_ext
     )
-    write_dyndep_entries(entries, setup.dyndep_path)
-    logger.debug("Wrote C++ module dyndep to %s", setup.dyndep_path)
+
+    manifest_path = setup.build_dir / MANIFEST_FILE
+    write_module_manifest(
+        manifest_path, setup, results, std_obj_nodes, bmi_ext, scanner, scanner_style
+    )
+
+    from pcons.core.subst import PathToken
+
+    std_ids = {id(node) for node in std_obj_nodes.values()}
+    scan_sources: dict[int, Any] = {}
+    for r in results:
+        obj_node = setup.spec_to_obj.get(id(r.spec))
+        if obj_node is None or id(obj_node) in std_ids:
+            continue
+        src_node = project.node(r.spec.src)
+        scan_sources[id(src_node)] = src_node
 
     dyndep_node = project.node(setup.dyndep_path)
+    manifest_node = project.node(manifest_path)
+    scan_inputs = [*scan_sources.values(), manifest_node]
+    dyndep_node.add_inputs(scan_inputs)
+    dyndep_node._build_info = {
+        "tool": "cxx_scan",
+        "command_var": "dyndepcmd",
+        "description": "SCAN C++ modules",
+        "sources": scan_inputs,
+        "command": [
+            sys.executable,
+            "-m",
+            "pcons.toolchains.cxx_module_scanner",
+            "--manifest",
+            MANIFEST_FILE,
+            "--out",
+            setup.dyndep_rel,
+        ],
+        "depfile": PathToken(suffix=".d"),
+        "deps_style": "gcc",
+        "restat": True,
+    }
+    if setup.first_env is not None:
+        setup.first_env.register_node(dyndep_node)
+
     participants = [obj for _, obj in setup.all_cxx_pairs]
     participants.extend(std_obj_nodes.values())
     for obj_node in participants:
@@ -953,33 +1159,6 @@ def wire_std_into_targets(
                 for output_node in target.output_nodes:
                     if std_obj_node not in output_node.explicit_deps:
                         output_node.explicit_deps.append(std_obj_node)
-
-
-def write_dyndep_from_results(
-    results: list[TuScanResult],
-    module_to_pcm: dict[str, str],
-    out_path: str | Path,
-) -> None:
-    """Write a Ninja dyndep file from pre-computed scan results.
-
-    For each TU:
-      - implicit outputs are the IFC/PCM files this TU provides
-      - implicit inputs are the IFC/PCM files this TU imports
-    """
-    entries: list[tuple[str, list[str], list[str]]] = []
-    for r in results:
-        provides_pcms: list[str] = []
-        if r.is_module_provider and r.logical_name in module_to_pcm:
-            provides_pcms.append(module_to_pcm[r.logical_name])
-
-        requires_pcms: list[str] = []
-        for ln in sorted(set(r.required_logical_names)):
-            if ln in module_to_pcm:
-                requires_pcms.append(module_to_pcm[ln])
-
-        entries.append((r.spec.obj_rel, provides_pcms, requires_pcms))
-
-    write_dyndep_entries(entries, out_path)
 
 
 def keyed_bmi_path(logical_name: str, moddir: str, key: str, extension: str) -> str:
@@ -1106,189 +1285,152 @@ def write_dyndep_entries(
     _write_text_if_changed(Path(out_path), "\n".join(lines))
 
 
-def write_dyndep(
-    manifest: list[dict[str, Any]],
-    mod_dir: str,
-    out_path: str,
-    scanner: str,
-    scanner_style: str = "clang",
+def _write_scan_depfile(
+    path: Path,
+    target: str,
+    specs: list[TuScanSpec],
+    scanner_style: str,
+    cache: ScanCache | None,
 ) -> None:
-    """Scan manifest sources and write Ninja dyndep file.
+    """Everything whose edit should re-run the dyndep edge, in make syntax.
 
-    Args:
-        manifest: List of manifest entry dicts (see module docstring).
-        mod_dir: Module directory, relative to build dir (e.g., "cxx_modules").
-        out_path: Output dyndep file path (relative to build dir).
-        scanner: clang-scan-deps executable (clang style) or cl.exe path (msvc style).
-        scanner_style: "clang" (default) or "msvc".
+    Every scan reports what it read, and the scan cache stores that list per
+    TU; the union is exactly the set of headers whose edits can change the
+    dyndep.
+
+    A TU whose scan raced an edit has no cache entry to draw on; its source
+    still appears, and the next reconfigure restores full coverage.
     """
-    # Module file key in manifest entries ("pcm" for clang, "ifc" for msvc)
-    mod_key = "ifc" if scanner_style == "msvc" else "pcm"
+    prereqs: set[str] = set()
+    for spec in specs:
+        prereqs.add(str(spec.src))
+        if cache is not None:
+            prereqs.update(cache.prereqs(spec_cache_key(spec, scanner_style)) or [])
 
-    # module_name -> mod_path, from the manifest "pcm"/"ifc" field when
-    # present, else derived from the logical name after scanning.
-    module_to_pcm: dict[str, str] = {}
+    def escape(p: str) -> str:
+        return p.replace("\\", "/").replace(" ", "\\ ")
 
-    # Scan all files and build the full dependency picture.
-    # entries: list of (obj, provides_pcms, requires_pcms)
-    entries: list[tuple[str, list[str], list[str]]] = []
+    deps = " ".join(escape(p) for p in sorted(prereqs))
+    path.write_text(f"{escape(target)}: {deps}\n", encoding="utf-8")
 
-    # Intermediate: scan results keyed by obj path
-    scan_results: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
 
-    for item in manifest:
-        src = str(item["src"])
-        obj = str(item["obj"])
-        compiler = str(item.get("compiler", "clang++"))
-        compile_flags = list(item.get("compile_flags", []))
+def regenerate_dyndep(manifest: dict[str, Any], out_rel: str) -> int:
+    """Re-scan the manifest's TUs and rewrite the dyndep file.
 
-        if scanner_style == "msvc":
-            p1689 = run_scan_deps_msvc(compiler, compile_flags, src)
+    The build-time half of the modules pass, run from the build directory as
+    the edge ``finish_module_pass`` created. Returns a process exit code;
+    refusing (nonzero) leaves the previous dyndep in place and fails the
+    build loudly, which beats writing entries a failed scan cannot vouch
+    for.
+    """
+    scanner = str(manifest.get("scanner", ""))
+    scanner_style = str(manifest.get("scanner_style", "clang"))
+    moddir = str(manifest.get("moddir", "cxx_modules"))
+    bmi_ext = str(manifest.get("bmi_ext", ".pcm"))
+    std_logicals = {str(s) for s in manifest.get("std_logicals", [])}
+
+    # Each spec stands in for its own object node: the keyed-entry helpers
+    # only ever id() the object and read obj_rel off the spec, and at build
+    # time there is no node graph to offer them.
+    fixed: list[TuScanResult] = []
+    specs: list[TuScanSpec] = []
+    spec_to_obj: dict[int, Any] = {}
+    obj_key: dict[int, str] = {}
+    for entry in manifest.get("tus", []):
+        obj_rel = str(entry["obj"])
+        if "p1689" in entry:
+            spec = TuScanSpec(src=Path(obj_rel), obj_rel=obj_rel, compiler="")
+            fixed.append(TuScanResult(spec=spec, p1689=entry["p1689"]))
         else:
-            p1689 = run_scan_deps(scanner, compiler, compile_flags, src, obj)
-        scan_results.append((item, p1689))
-
-    # Build module_name -> pcm_path map from scan results.
-    # For module interfaces we prefer the manifest-provided pcm path.
-    for item, p1689 in scan_results:
-        if p1689 is None:
-            continue
-        rules = p1689.get("rules", [])
-        if not isinstance(rules, list):
-            continue
-        for rule in rules:
-            if not isinstance(rule, dict):
-                continue
-            provides = rule.get("provides", [])
-            if not isinstance(provides, list):
-                continue
-            for prov in provides:
-                if not isinstance(prov, dict):
-                    continue
-                logical_name = str(prov.get("logical-name", ""))
-                if not logical_name:
-                    continue
-                # Use manifest mod file field if available, else derive from logical name
-                if item.get("is_module_interface") and mod_key in item:
-                    pcm_path = str(item[mod_key])
-                else:
-                    # Derive: replace ':' with '-' for partition modules
-                    safe_name = logical_name.replace(":", "-")
-                    ext = ".ifc" if scanner_style == "msvc" else ".pcm"
-                    pcm_path = f"{mod_dir}/{safe_name}{ext}"
-                module_to_pcm[logical_name] = pcm_path
-
-    # Third pass: build dyndep entries.
-    for item, p1689 in scan_results:
-        obj = str(item["obj"])
-        is_interface = bool(item.get("is_module_interface", False))
-
-        provides_pcms: list[str] = []
-        requires_pcms: list[str] = []
-
-        if p1689 is not None:
-            rules = p1689.get("rules", [])
-            if isinstance(rules, list):
-                for rule in rules:
-                    if not isinstance(rule, dict):
-                        continue
-                    # Provides (module interface outputs)
-                    provides = rule.get("provides", [])
-                    if isinstance(provides, list):
-                        for prov in provides:
-                            if not isinstance(prov, dict):
-                                continue
-                            logical_name = str(prov.get("logical-name", ""))
-                            if logical_name and logical_name in module_to_pcm:
-                                provides_pcms.append(module_to_pcm[logical_name])
-
-                    # Requires (module dependencies)
-                    requires = rule.get("requires", [])
-                    if isinstance(requires, list):
-                        for req in requires:
-                            if not isinstance(req, dict):
-                                continue
-                            logical_name = str(req.get("logical-name", ""))
-                            if logical_name and logical_name in module_to_pcm:
-                                requires_pcms.append(module_to_pcm[logical_name])
-
-        # If it's a module interface and we have a mod file from the manifest but no
-        # provides from the scan (e.g., scanner failed), fall back to manifest mod file.
-        if is_interface and not provides_pcms and mod_key in item:
-            provides_pcms = [str(item[mod_key])]
-
-        entries.append(
-            (
-                obj,
-                sorted(set(provides_pcms)),
-                sorted(set(requires_pcms)),
+            spec = TuScanSpec(
+                src=Path(str(entry["src"])),
+                obj_rel=obj_rel,
+                compiler=str(entry.get("compiler", "")),
+                compile_flags=[str(f) for f in entry.get("flags", [])],
             )
+            specs.append(spec)
+        spec_to_obj[id(spec)] = spec
+        obj_key[id(spec)] = str(entry["key"])
+
+    cache = ScanCache(Path.cwd())
+    scanned = scan_translation_units(specs, scanner, scanner_style, cache)
+    cache.save()
+
+    failed = sorted(str(r.spec.src) for r in scanned if r.p1689 is None)
+    if failed:
+        print(
+            "pcons module scan: could not scan "
+            + ", ".join(failed)
+            + " (see warnings above); keeping the previous dyndep file",
+            file=sys.stderr,
         )
+        return 1
 
-    # Write dyndep file
-    lines = ["ninja_dyndep_version = 1", ""]
-    for obj, provides_pcms, requires_pcms in sorted(entries, key=lambda e: e[0]):
-        # Implicit outputs: PCM files produced by this compilation
-        if provides_pcms:
-            implicit_out = " | " + " ".join(provides_pcms)
-        else:
-            implicit_out = ""
+    results = fixed + scanned
+    try:
+        provider_obj = map_module_providers(
+            results, spec_to_obj, obj_key, moddir, bmi_ext
+        )
+        # A header can add `import std;` to a TU, but only configure can
+        # synthesize the std module's build. Say so, rather than letting the
+        # compile fail on a module nobody provides.
+        required = {ln for r in results for ln in r.required_logical_names}
+        new_std = (required & {"std", "std.compat"}) - std_logicals
+        if new_std:
+            print(
+                f"pcons module scan: `import {sorted(new_std)[0]};` appeared "
+                "since the last configure (likely via a header edit). "
+                "Run pcons to set up the standard-library module build.",
+                file=sys.stderr,
+            )
+            return 1
+        entries = build_keyed_entries(
+            results, spec_to_obj, obj_key, provider_obj, moddir, bmi_ext
+        )
+    except RuntimeError as e:
+        print(f"pcons module scan: {e}", file=sys.stderr)
+        return 1
 
-        # Implicit inputs: PCM files required by this compilation
-        if requires_pcms:
-            implicit_in = " | " + " ".join(requires_pcms)
-        else:
-            implicit_in = ""
-
-        lines.append(f"build {obj}{implicit_out}: dyndep{implicit_in}")
-        lines.append("")
-
-    dyndep_text = "\n".join(lines)
-    _write_text_if_changed(Path(out_path), dyndep_text)
+    for key in {obj_key[id(s)] for s in spec_to_obj.values()}:
+        Path(moddir, key).mkdir(parents=True, exist_ok=True)
+    write_dyndep_entries(entries, Path(out_rel))
+    _write_scan_depfile(Path(out_rel + ".d"), out_rel, specs, scanner_style, cache)
+    return 0
 
 
 def main() -> int:
     """Entry point when run as python -m pcons.toolchains.cxx_module_scanner."""
     parser = argparse.ArgumentParser(
-        description="Generate Ninja dyndep file for C++20 module dependencies"
+        description="Regenerate the Ninja dyndep file for C++20 modules"
     )
     parser.add_argument(
         "--manifest",
         required=True,
-        help="Path to manifest JSON file (relative to build dir)",
+        help="scan manifest written at configure time (relative to build dir)",
     )
     parser.add_argument(
         "--out",
         required=True,
-        help="Output dyndep file path (relative to build dir)",
-    )
-    parser.add_argument(
-        "--mod-dir",
-        default="cxx_modules",
-        help="Module directory relative to build dir (default: cxx_modules)",
-    )
-    parser.add_argument(
-        "--scanner",
-        default="clang-scan-deps",
-        help="Path/name of scanner executable (default: clang-scan-deps)",
-    )
-    parser.add_argument(
-        "--scanner-style",
-        default="clang",
-        choices=["clang", "msvc", "gcc"],
-        help="Scanner style: 'clang' (clang-scan-deps), 'msvc' (cl.exe), or 'gcc' (default: clang)",
+        help="dyndep file to write (relative to build dir)",
     )
     args = parser.parse_args()
 
     try:
-        manifest_text = Path(args.manifest).read_text(encoding="utf-8")
-        manifest: list[dict[str, Any]] = json.loads(manifest_text)
-    except (OSError, json.JSONDecodeError) as e:
+        manifest: dict[str, Any] = json.loads(
+            Path(args.manifest).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as e:
         print(f"Error reading manifest {args.manifest}: {e}", file=sys.stderr)
         return 1
+    if not isinstance(manifest, dict):
+        print(f"Error: {args.manifest} is not a module scan manifest", file=sys.stderr)
+        return 1
 
-    write_dyndep(manifest, args.mod_dir, args.out, args.scanner, args.scanner_style)
-    return 0
+    try:
+        return regenerate_dyndep(manifest, args.out)
+    except CxxModuleScannerNotFound as e:
+        print(f"pcons module scan: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

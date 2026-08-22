@@ -447,14 +447,6 @@ class TestGccModulesDepsTracking:
             ],
         )
         monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.build_module_map",
-            lambda _results, _mod_dir, _ext: {},
-        )
-        monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.write_dyndep_from_results",
-            lambda _results, _module_map, _out: None,
-        )
-        monkeypatch.setattr(
             tc,
             "_inject_gcc_std_module_builds",
             lambda *_args, **_kwargs: {},

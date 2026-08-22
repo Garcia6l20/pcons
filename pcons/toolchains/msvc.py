@@ -872,8 +872,9 @@ class MsvcToolchain(MsvcCompatibleToolchain):
         output rather than file extension: module providers get `/TP
         /interface /ifcOutput <ifc>` (or `/internalPartition` when the
         scanner reports is-interface=false), and every C++ TU gets
-        `/ifcSearchDir`. The Ninja dyndep file is written directly here,
-        with IFC paths derived from logical module names.
+        `/ifcSearchDir`. The Ninja dyndep file is regenerated at build
+        time by the edge `finish_module_pass` creates, with IFC paths
+        derived from logical module names.
         """
         from pcons.toolchains.cxx_module_scanner import (
             TuScanSpec,
@@ -915,6 +916,7 @@ class MsvcToolchain(MsvcCompatibleToolchain):
                 iprefix="/I",
                 isysprefix="/external:I",
                 dprefix="/D",
+                root=project.root_dir,
             )
             specs.append(add_tu_spec(setup, src, obj_node, compile_flags, flag_spec))
 
@@ -922,9 +924,13 @@ class MsvcToolchain(MsvcCompatibleToolchain):
         # not on PATH) leave that result with p1689=None — propagated as
         # "not a module provider" so the build doesn't get an /ifcOutput it
         # can't satisfy. Errors are logged to stderr by the runner.
+        from pcons.toolchains._scan_cache import ScanCache
+
+        scan_cache = ScanCache(setup.build_dir)
         results = scan_translation_units(
-            specs, scanner=setup.compiler_cmd, scanner_style="msvc"
+            specs, scanner=setup.compiler_cmd, scanner_style="msvc", cache=scan_cache
         )
+        scan_cache.save()
 
         # Synthesize std/std.compat module builds where imported (appended
         # to `results` so the dyndep file declares their .ifc outputs).
@@ -982,7 +988,16 @@ class MsvcToolchain(MsvcCompatibleToolchain):
             if searchdir not in context.flags:
                 context.flags.extend(["/ifcSearchDir", searchdir])
 
-        finish_module_pass(project, setup, results, provider_obj, std_obj_nodes, ".ifc")
+        finish_module_pass(
+            project,
+            setup,
+            results,
+            provider_obj,
+            std_obj_nodes,
+            ".ifc",
+            scanner=setup.compiler_cmd,
+            scanner_style="msvc",
+        )
 
     def _inject_std_module_builds(
         self,
