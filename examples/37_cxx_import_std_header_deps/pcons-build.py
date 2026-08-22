@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Reproducer for missing header-triggered rebuild on regular .cpp in modules mode."""
 

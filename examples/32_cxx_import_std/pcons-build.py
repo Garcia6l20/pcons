@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Build script for a C++23 program that uses `import std;`.
 

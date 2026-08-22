@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Staged generation: the build discovers what to build, mid-build.
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Qt deployment: bundle the Qt runtime with the application.
 

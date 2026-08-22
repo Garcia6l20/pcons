@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Example demonstrating multi-library builds with dependency visualization.
 

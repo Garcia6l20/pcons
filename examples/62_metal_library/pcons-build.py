@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Metal shaders compiled and linked into the .metallib an app loads.
 

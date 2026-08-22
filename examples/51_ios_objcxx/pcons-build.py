@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Cross-compile C++ and Objective-C++ for iOS with the ios() cross preset.
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Build a nanobind Python extension, packaged via the pcons.pyproject backend."""
 

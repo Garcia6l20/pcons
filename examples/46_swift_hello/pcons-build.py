@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """A Swift program: all .swift files in a target compile as one module.
 

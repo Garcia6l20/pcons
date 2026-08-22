@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Build script demonstrating InstallDir for recursive directory copying.
 

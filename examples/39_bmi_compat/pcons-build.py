@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Build script demonstrating C++20 module interface (BMI) reuse across targets.
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Qt translations: compile .ts catalogs with lrelease and embed them.
 
