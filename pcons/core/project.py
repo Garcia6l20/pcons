@@ -796,8 +796,21 @@ class Project(_ProjectBuilders):
                 flat.extend(t)
             else:
                 flat.append(t)
+
+        def reaches(candidate: AliasNode, goal: AliasNode) -> bool:
+            if candidate is goal:
+                return True
+            return any(
+                isinstance(m, AliasNode) and reaches(m, goal) for m in candidate._nodes
+            )
+
         for t in flat:
             match t:
+                case AliasNode() if reaches(t, alias):
+                    raise ValueError(
+                        f"Adding alias '{t.alias_name}' to '{name}' would "
+                        f"create a cycle."
+                    )
                 case Target():
                     # Defer resolution: output_nodes may not be populated until resolve()
                     alias.add_deferred_target(t)

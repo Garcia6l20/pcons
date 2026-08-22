@@ -190,6 +190,24 @@ class TestMakefileAliases:
         content = (tmp_path / "Makefile").read_text()
         assert "all_libs:" in content
 
+    def test_an_alias_may_contain_another_alias(self, tmp_path):
+        """Alias names are declared .PHONY, so one works as a prerequisite
+        of another."""
+        project = Project("test", root_dir=tmp_path, build_dir=".")
+        inner_node = FileNode(tmp_path / "build" / "libmylib.a")
+        inner = project.Alias("inner", inner_node)
+        project.Alias("outer", inner)
+
+        gen = MakefileGenerator()
+        gen.generate(project)
+        BaseGenerator._generate_pending(project)
+
+        content = (tmp_path / "Makefile").read_text()
+        outer_line = next(
+            line for line in content.splitlines() if line.startswith("outer:")
+        )
+        assert "inner" in outer_line.split()
+
 
 class TestMakefileDefaultTarget:
     def test_writes_default_goal(self, tmp_path):

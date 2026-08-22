@@ -162,6 +162,48 @@ class TestNinjaAliases:
         assert "build/sub/libsub.a" in libs_line
         assert "build docs: phony" in content
 
+    def test_an_alias_may_contain_another_alias(self, tmp_path):
+        """A phony rule can name another phony target, so an alias groups
+        aliases as naturally as files."""
+        project = Project("test", root_dir=tmp_path, build_dir=".")
+        target = Target("mylib")
+        target.output_nodes.append(FileNode("build/libmy.a"))
+        inner = project.Alias("inner", target)
+
+        other = Target("other")
+        other.output_nodes.append(FileNode("build/other.a"))
+        project.Alias("outer", inner)
+        project.Alias("outer", other)
+
+        gen = NinjaGenerator()
+        gen.generate(project)
+        BaseGenerator._generate_pending(project)
+
+        content = normalize_path((tmp_path / "build.ninja").read_text())
+        outer_line = next(
+            line for line in content.splitlines() if line.startswith("build outer:")
+        )
+        assert "inner" in outer_line.split()
+        assert "build/other.a" in outer_line
+        assert "build inner: phony" in content
+
+    def test_an_alias_cannot_contain_itself(self, tmp_path):
+        project = Project("test", root_dir=tmp_path, build_dir=".")
+        target = Target("mylib")
+        target.output_nodes.append(FileNode("build/libmy.a"))
+        group = project.Alias("group", target)
+        with pytest.raises(ValueError, match="cycle"):
+            project.Alias("group", group)
+
+    def test_an_alias_cycle_is_rejected(self, tmp_path):
+        project = Project("test", root_dir=tmp_path, build_dir=".")
+        target = Target("mylib")
+        target.output_nodes.append(FileNode("build/libmy.a"))
+        a = project.Alias("a", target)
+        b = project.Alias("b", a)
+        with pytest.raises(ValueError, match="cycle"):
+            project.Alias("a", b)
+
 
 class TestNinjaDefaults:
     def test_writes_defaults(self, tmp_path):

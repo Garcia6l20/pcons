@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
-from pcons.core.node import FileNode, Node
+from pcons.core.node import AliasNode, FileNode, Node
 from pcons.core.paths import PathResolver
 from pcons.generators.generator import BaseGenerator, apply_context_overrides
 
@@ -539,11 +539,16 @@ class MakefileGenerator(BaseGenerator):
 
         f.write("# Aliases\n")
         for name, nodes in aliases.items():
-            targets = " ".join(
-                self._node_path(t) for t in nodes if isinstance(t, FileNode)
-            )
-            if targets:
-                f.write(f"{name}: {targets}\n")
+            members: list[str] = []
+            for t in nodes:
+                if isinstance(t, AliasNode):
+                    # An alias may group other aliases: every alias name is
+                    # already declared .PHONY, so it works as a prerequisite.
+                    members.append(t.alias_name)
+                elif isinstance(t, FileNode):
+                    members.append(self._node_path(t))
+            if members:
+                f.write(f"{name}: {' '.join(members)}\n")
         f.write("\n")
 
     def _write_tests(self, f: TextIO, project: Project) -> None:

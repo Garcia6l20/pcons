@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, TextIO, cast
 
 from pcons.configure.platform import get_platform
 from pcons.core.debug import trace, trace_value
-from pcons.core.node import FileNode, Node
+from pcons.core.node import AliasNode, FileNode, Node
 from pcons.core.paths import PathResolver
 from pcons.core.subst import NodeVar
 from pcons.generators.generator import BaseGenerator, apply_context_overrides
@@ -902,11 +902,16 @@ class NinjaGenerator(BaseGenerator):
 
         f.write("# Aliases\n")
         for name, nodes in aliases.items():
-            targets = " ".join(
-                self._output_ref(t) for t in nodes if isinstance(t, FileNode)
-            )
-            if targets:
-                f.write(f"build {name}: phony {targets}\n")
+            members: list[str] = []
+            for t in nodes:
+                if isinstance(t, AliasNode):
+                    # An alias may group other aliases: a phony rule can name
+                    # another phony target directly. Alias() rejects cycles.
+                    members.append(t.alias_name)
+                elif isinstance(t, FileNode):
+                    members.append(self._output_ref(t))
+            if members:
+                f.write(f"build {name}: phony {' '.join(members)}\n")
         f.write("\n")
 
     def _write_tests(self, f: TextIO, project: Project) -> None:

@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An alias inside another alias now builds.** It used to be accepted
+  and silently dropped. Cycles are detected and reported.
 - **A header that gains an `import` now reorders the build on its own.**
   The C++ modules dyndep file was written at configure time, and headers
   are not configure dependencies, so an `import` added to a header left
