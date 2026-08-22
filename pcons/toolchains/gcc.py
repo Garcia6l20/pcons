@@ -408,10 +408,21 @@ class GccToolchain(UnixToolchain):
                 if modules_flag not in context.flags:
                     context.flags.append(modules_flag)
             # Keep header depfiles for regular C++ TUs. For module interfaces,
-            # let dyndep drive module dependencies to avoid depfile conflicts.
+            # let dyndep drive module dependencies: GCC's depfile there names
+            # the BMI as both target and prerequisite, which ninja reads as a
+            # dependency cycle. Header deps come from the scan node instead,
+            # so drop the -MD/-MF flags too, not just the declaration —
+            # otherwise GCC writes a .d file nothing ever reads (#102).
             if src in module_src_paths:
                 bi["deps_style"] = None
                 bi["depfile"] = None
+                node_env = bi.get("env")
+                if node_env is not None:
+                    node_env.cxx.set(
+                        "modobjcmd",
+                        [t for t in node_env.cxx.objcmd if t != "$cxx.depflags"],
+                    )
+                    bi["command_var"] = "modobjcmd"
 
         specs: list[TuScanSpec] = []
         for src, obj_node in setup.all_cxx_pairs:

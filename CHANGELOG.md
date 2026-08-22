@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A GCC module interface compile no longer writes a depfile nothing
+  reads.** The rule deliberately declares no `depfile` — GCC's would name
+  the BMI as both target and prerequisite, a ninja dependency cycle — but
+  the `-MD -MF` flags stayed in the command, leaving an unread `.d` beside
+  every module object. The flags are gone too; header dependencies still
+  come from the scan step. (#102)
 - **A `Target` passed in `sources=` is compiled, not merely waited for.**
   `sources=[gen]` means the files that target builds, the way a path names a
   file; it used to order the build and nothing else, so a generated source

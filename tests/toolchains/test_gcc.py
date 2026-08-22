@@ -467,6 +467,88 @@ class TestGccModulesDepsTracking:
         assert build_info["depfile"] is not None
         assert build_info["deps_style"] == "gcc"
 
+    def test_after_resolve_drops_depflags_for_module_interfaces(
+        self, tmp_path, monkeypatch
+    ):
+        """Module interfaces drop -MD/-MF along with the depfile declaration.
+
+        GCC's depfile for a module interface names the BMI as both target and
+        prerequisite (a ninja dependency cycle), so the declaration is
+        cleared — but with the flags left in the command, GCC writes a .d
+        file nothing ever reads (#102). The object must switch to a command
+        template without $cxx.depflags; header deps come from the SCAN edge.
+        """
+
+        class _FakeCxxTool(SimpleNamespace):
+            def set(self, name: str, value: object) -> None:
+                setattr(self, name, value)
+
+        tc = GccToolchain()
+        project = Project("test", root_dir=tmp_path, build_dir="build")
+
+        objcmd = ["$cxx.cmd", "$cxx.flags", "$cxx.depflags", "-c", "-o"]
+        env = SimpleNamespace(
+            cxx=_FakeCxxTool(cmd="g++", flags=[], objcmd=list(objcmd)),
+            register_node=lambda _node: None,
+        )
+
+        def make_obj(path: str) -> FileNode:
+            obj = FileNode(path)
+            obj._build_info = {
+                "env": env,
+                "context": SimpleNamespace(flags=[], includes=[], defines=[]),
+                "depfile": PathToken(path=path, path_type="build", suffix=".d"),
+                "deps_style": "gcc",
+            }
+            return obj
+
+        mod_obj = make_obj("build/obj/mod.cppm.o")
+        cxx_obj = make_obj("build/obj/main.cpp.o")
+        module_pair = (tmp_path / "src" / "mod.cppm", mod_obj)
+        cxx_pair = (tmp_path / "src" / "main.cpp", cxx_obj)
+
+        monkeypatch.setattr(
+            "pcons.toolchains.cxx_module_scanner.select_modules_scope",
+            lambda _source_obj_by_language: ([module_pair], [cxx_pair]),
+        )
+        monkeypatch.setattr(
+            "pcons.toolchains.cxx_module_scanner.scan_translation_units",
+            lambda specs, scanner, scanner_style, cache=None: [
+                SimpleNamespace(
+                    spec=s,
+                    required_logical_names=set(),
+                    is_module_provider=False,
+                )
+                for s in specs
+            ],
+        )
+        monkeypatch.setattr(
+            tc,
+            "_inject_gcc_std_module_builds",
+            lambda *_args, **_kwargs: {},
+        )
+
+        source_obj_by_language = {
+            "cxx_module": [module_pair],
+            "cxx": [cxx_pair],
+        }
+        tc.after_resolve(project, source_obj_by_language)
+
+        mod_bi = mod_obj._build_info
+        assert mod_bi is not None
+        assert mod_bi["depfile"] is None
+        assert mod_bi["deps_style"] is None
+        assert mod_bi["command_var"] == "modobjcmd"
+        assert "$cxx.depflags" not in env.cxx.modobjcmd
+        assert env.cxx.modobjcmd == [t for t in objcmd if t != "$cxx.depflags"]
+
+        # The regular TU is untouched: same command, depfile still declared.
+        cxx_bi = cxx_obj._build_info
+        assert cxx_bi is not None
+        assert cxx_bi["depfile"] is not None
+        assert cxx_bi["deps_style"] == "gcc"
+        assert "command_var" not in cxx_bi
+
     def test_regular_cpp_not_cxx_module(self) -> None:
         tc = GccToolchain()
         handler = tc.get_source_handler(".cpp")
