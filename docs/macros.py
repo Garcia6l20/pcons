@@ -12,6 +12,8 @@ import logging
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -274,8 +276,29 @@ def _all_toolchain_entries() -> list:
     return entries
 
 
+@contextmanager
+def _as_platform(system: str) -> Iterator[None]:
+    """Make pcons believe it is running on *system* ("Darwin", "Linux", ...).
+
+    Some source types are gated on the host OS rather than on tool detection
+    — LLVM only answers for `.metal` on macOS — so a table built from the
+    docs builder's own platform would silently omit them. ReadTheDocs builds
+    on Linux, which is exactly the case that would lose Metal.
+    """
+    import pcons.configure.platform as plat
+
+    saved_cache, saved_system = plat._platform, plat.platform.system
+    plat.platform.system = lambda: system  # type: ignore[assignment]
+    plat._platform = None
+    try:
+        yield
+    finally:
+        plat.platform.system = saved_system  # type: ignore[assignment]
+        plat._platform = saved_cache
+
+
 def _collect_source_suffixes() -> dict[str, set[str]]:
-    """Map each source suffix to the toolchains that compile it.
+    """Map each source suffix to the toolchains that compile it, on any host.
 
     Toolchains answer in one of two ways, so both are consulted:
 
@@ -288,6 +311,16 @@ def _collect_source_suffixes() -> dict[str, set[str]]:
       toolchain already claims are skipped, so Qt's moc reading `.cpp` does
       not make Qt a C++ compiler.
     """
+    suffixes: dict[str, set[str]] = {}
+    for system in ("Darwin", "Linux", "Windows"):
+        with _as_platform(system):
+            for suffix, names in _collect_on_this_platform().items():
+                suffixes.setdefault(suffix, set()).update(names)
+    return suffixes
+
+
+def _collect_on_this_platform() -> dict[str, set[str]]:
+    """The suffix map as seen from the platform currently in effect."""
     suffixes: dict[str, set[str]] = {}
     entries = _all_toolchain_entries()
     by_handler: list = []
