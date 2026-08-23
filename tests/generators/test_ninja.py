@@ -1053,17 +1053,17 @@ class TestGeneratedSourcesOfALinkedDep:
     """
 
     @staticmethod
-    def _build(tmp_path, gcc_toolchain):
+    def _build(tmp_path, gcc_toolchain, consumer="Program"):
         project = Project("test", root_dir=tmp_path, build_dir="build")
         env = project.Environment(toolchain=gcc_toolchain)
         (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
         gen = env.Command(
-            target="build/gen.c",
+            target="gen.c",
             source="gen.py",
             command="python $SOURCE $TARGET",
         )
         lib = project.StaticLibrary("genlib", env, sources=[gen])
-        app = project.Program("app", env, sources=["main.c"])
+        app = getattr(project, consumer)("app", env, sources=["main.c"])
         app.link(lib)
 
         project.resolve()
@@ -1085,6 +1085,22 @@ class TestGeneratedSourcesOfALinkedDep:
         link_line = next(ln for ln in lines if ln.startswith("build app:"))
 
         assert "gen.c" in link_line.split(" | ", 1)[1]
+
+    @pytest.mark.parametrize(
+        "consumer", ["Program", "SharedLibrary", "StaticLibrary", "ObjectLibrary"]
+    )
+    def test_every_target_type_orders_its_compiles(
+        self, tmp_path, gcc_toolchain, consumer
+    ):
+        """The ordering is a property of compiling, not of linking.
+
+        A static library has no link step to hang it off, but its sources may
+        include the generated file just the same.
+        """
+        lines = self._build(tmp_path, gcc_toolchain, consumer=consumer)
+        obj_line = next(ln for ln in lines if ln.startswith("build obj.app/"))
+
+        assert "|| gen.c" in obj_line
 
 
 class TestNinjaTestRule:

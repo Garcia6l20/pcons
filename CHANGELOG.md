@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists before any compile runs, and the depfile decides which sources
   actually included it. (#104)
 
+- **A static library's compiles now wait for a dependency's generated
+  headers.** Only programs and shared libraries ordered their compiles after
+  the non-link outputs of a linked dependency, so a `StaticLibrary` or
+  `ObjectLibrary` whose sources included a generated header could compile
+  before the header existed — a race that a parallel build lost at random.
+  Ordering a compile is a property of compiling, not of linking, and now
+  applies to every target type.
+
 ## [0.28.0] - 2026-08-23
 
 ### Added
