@@ -353,15 +353,17 @@ class TestDependencyMistakes:
         errors = project.validate()
         assert any(isinstance(e, DependencyCycleError) for e in errors)
 
-    def test_circular_dependency_strict(self, project_env):
-        """Circular dependency in strict mode raises."""
+    def test_circular_dependency_raises_on_resolve(self, project_env):
+        """A cycle stops the run whatever `strict` says: it has no build
+        order, so nothing downstream of it could be built even if the build
+        files were written."""
         project, env = project_env
         lib_a = project.StaticLibrary("liba", env, sources=["src/lib.c"])
         lib_b = project.StaticLibrary("libb", env, sources=["src/main.c"])
         lib_a.public.link_libs.append(lib_b)
         lib_b.public.link_libs.append(lib_a)
-        with pytest.raises(PconsError):
-            project.resolve(strict=True)
+        with pytest.raises(DependencyCycleError):
+            project.resolve()
 
     def test_self_link(self, project_env):
         """Target links itself."""

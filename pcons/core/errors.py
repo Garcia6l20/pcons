@@ -20,7 +20,15 @@ class PconsError(Exception):
     Attributes:
         message: The error message.
         location: Optional source location where the error occurred.
+        fatal: Whether this error may be reported and carried past. Only
+            errors collected rather than raised — see `Project.validate()` —
+            are ever reported instead of stopping the run, and an error that
+            leaves the build description unusable sets this to stop it
+            anyway. The decision belongs with the error, which knows what it
+            found; not with whoever collected it.
     """
+
+    fatal: bool = False
 
     def __init__(
         self,
@@ -124,9 +132,14 @@ class CircularReferenceError(SubstitutionError):
 class DependencyCycleError(PconsError):
     """Circular dependency detected in the build graph.
 
+    Always fatal: a cycle has no build order, so nothing downstream of it
+    could be built even if the build files were written.
+
     Attributes:
         cycle: The nodes forming the cycle.
     """
+
+    fatal = True
 
     def __init__(
         self,
@@ -159,6 +172,11 @@ class MissingSourceError(PconsError):
         self.path = path
         self.target_name = target_name
         self.produced = produced
+        # A source naming another target's output cannot be carried past:
+        # the build file would name a path no rule produces, and the build
+        # tool cannot even load that. A source that is merely absent still
+        # reports and continues, so a script can be fixed in one pass.
+        self.fatal = produced is not None
 
         msg = f"source file not found: {path}"
         if target_name:

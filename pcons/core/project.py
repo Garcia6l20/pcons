@@ -1230,7 +1230,7 @@ class Project(_ProjectBuilders):
             result.extend(child._tree())
         return result
 
-    def validate(self) -> list[Exception]:
+    def validate(self) -> list[PconsError]:
         """Validate the project configuration.
 
         Checks for:
@@ -1241,7 +1241,7 @@ class Project(_ProjectBuilders):
         Returns:
             List of validation errors (empty if valid).
         """
-        errors: list[Exception] = []
+        errors: list[PconsError] = []
 
         # Check for dependency cycles
         cycles = detect_cycles_in_targets(self._targets)
@@ -1347,10 +1347,10 @@ class Project(_ProjectBuilders):
         errors = self.validate()
         if errors:
             for error in errors:
+                if error.fatal:
+                    raise error
                 logger.warning("Validation: %s", error)
             if strict:
-                from pcons.core.errors import PconsError
-
                 raise PconsError(
                     f"Validation failed with {len(errors)} error(s). "
                     f"First error: {errors[0]}"

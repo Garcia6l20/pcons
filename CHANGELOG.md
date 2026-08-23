@@ -36,11 +36,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a generated source no longer land under a redundant
   `obj.<target>/build/` directory. `Tarfile` and `Zipfile` outputs are
   anchored the same way.
-- **A source that names a generated file now says which target builds it.**
-  Sources usually name files in the source tree, so a generated file referred to by
-  its build-dir-relative path pointed at the wrong file. The
-  validation error now names the target whose output it is and says to pass
-  that **target** in `sources=` instead of its path.
+- **Naming a generated file by a bare build-dir-relative path in `sources=`
+  is now an error.** Sources name files in the source tree, so
+  `sources=["gen/hello.c"]` means the source tree's `gen/hello.c`, not the
+  `gen/hello.c` that some target builds. We used to have a workaround for this
+  but it caused worse side effects, so this applies the rule uniformly.
+  The error names the target whose output it is, and both ways
+  to say what was meant:
+
+  ```python
+  sources=[gen_hello]                          # pass the target itself, or
+  sources=[project.build_dir / "gen/hello.c"]  # name the real path
+  ```
+
+  **Breaking:** scripts naming generated sources that way must be updated.
+
+  **A dependency cycle is now an error rather than a warning.** The
+  cyclic build couldn't work, so an error is better. The error shows
+  all the paths in the cycle.
 
 ### Fixed
 

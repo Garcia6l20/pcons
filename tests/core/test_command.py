@@ -11,6 +11,7 @@ import pytest
 from pcons.configure.platform import get_platform
 from pcons.core.builder import GenericCommandBuilder
 from pcons.core.environment import Environment
+from pcons.core.errors import MissingSourceError
 from pcons.core.node import FileNode
 from pcons.core.project import Project
 from pcons.core.subst import SourcePath, TargetPath
@@ -235,18 +236,19 @@ class TestEnvironmentCommand:
 
     def test_a_source_that_means_a_target_says_so(self, tmp_path):
         """Naming a generated file by its build-dir-relative path points into
-        the source tree, where nothing generated it. The validation error
-        names the target that does build it, rather than just the missing
-        file (the flipperzero-port trap)."""
+        the source tree, where nothing generated it. Resolving raises rather
+        than warning: the build file would name a
+        path no rule produces, so the build tool could not even load it. The
+        error names the target that does build it, not just a missing file."""
         project = Project("gen_src", root_dir=tmp_path)
         env = project.Environment(toolchain="c")
         env.Command(target="gen/hello.c", command="touch $TARGET", name="gen_hello")
         project.Program("app", env, sources=["gen/hello.c"])
-        project.resolve()
 
-        errors = project.validate()
-        assert len(errors) == 1
-        message = str(errors[0])
+        with pytest.raises(MissingSourceError) as excinfo:
+            project.resolve()
+
+        message = str(excinfo.value)
         assert (
             "Target 'gen_hello' builds a file of that path, as 'build/gen/hello.c'"
             in message
