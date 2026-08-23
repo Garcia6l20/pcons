@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Build the pcons documentation site, with pcons.
 
-The site is mkdocs (mkdocs.yml at the repo root); ReadTheDocs and
+The site is mkdocs-based (mkdocs.yml at the repo root); ReadTheDocs and
 `make docs-site` invoke mkdocs themselves. This wraps the same build so
 `pcons -C docs` produces it too, into docs/build/site/, and rebuilds only
 when a page or the configuration changed.
@@ -54,50 +54,40 @@ project.Default(site)
 
 @project.cli_command()
 def showdocs() -> None:
-    """Serve the documentation site in a browser, rebuilding on edits.
+    """Serve the documentation site in a browser, live-reloading on edits.
 
     Serves over HTTP rather than opening the files directly, because
-    mkdocs-material needs a real server for parts of its behavior. With
-    the optional ``watchfiles`` package installed, editing a page
-    rebuilds the site; refresh the browser to see it.
+    mkdocs-material needs a real server for parts of its behavior. The
+    server is mkdocs' own livereload server (the one behind `mkdocs
+    serve`), so a saved edit rebuilds the site through pcons and the
+    browser refreshes itself. Ctrl-C to stop.
     """
-    import functools
-    import http.server
     import subprocess
-    import threading
-    import webbrowser
 
-    class QuietHandler(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *args: object) -> None:
-            pass  # request logging would drown the build output
+    from mkdocs.livereload import LiveReloadServer
 
-    handler = functools.partial(QuietHandler, directory=str(site_dir))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"Serving docs at {url}  (Ctrl-C to stop)")
-    webbrowser.open(url)
-
-    def rebuild() -> int:
-        return subprocess.run(
+    def rebuild() -> None:
+        result = subprocess.run(
             [sys.executable, "-m", "pcons", "build"], cwd=project.root_dir
-        ).returncode
+        )
+        if result.returncode:
+            print("docs build failed; fix the page and save again")
 
-    from pcons import watch
+    server = LiveReloadServer(
+        builder=rebuild, host="127.0.0.1", port=8642, root=str(site_dir)
+    )
+    # Watch exactly the build's declared inputs, so the server and ninja
+    # agree on what a relevant edit is (and the build tree is not watched,
+    # which would re-trigger on every rebuild).
+    for path in [*pages, *config]:
+        server.watch(str(path), recursive=False)
 
     try:
-        watch.ensure_available()
-    except Exception as e:
-        print(f"Not watching for edits: {e}")
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            return
-    watch.watch_and_build(
-        rebuild,
-        [project.root_dir],
-        excluded_dirs=[project.root_dir / "build"],
-    )
+        server.serve(open_in_browser=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
 
 
 showdocs.depends(site)
