@@ -46,7 +46,7 @@ jobs:
             -o Acquire::Retries=5 -o Acquire::http::Timeout=20 \
             pandoc ninja-build
       - name: Build the dogfood demo page (pcons building its own docs)
-        run: uv run pcons -C docs
+        run: uv run --extra docs pcons -C docs
       - name: Build the site (what ReadTheDocs publishes)
         run: uv run --extra docs mkdocs build --strict
 
