@@ -23,7 +23,7 @@ This guide maps common Makefile patterns to their pcons equivalents. It's design
 | `LDFLAGS += -L/usr/local/lib` | `env.link.flags.append("-L/usr/local/lib")` |
 | `LDLIBS += -lm -lpthread` | `env.link.libs.extend(["m", "pthread"])` |
 | `CPPFLAGS += -DFOO` | `env.cc.defines.append("FOO")` |
-| `CPPFLAGS += -Iinclude` | `env.cc.include_dirs.append("include")` |
+| `CPPFLAGS += -Iinclude` | `env.cc.includes.append("include")` |
 | `install: ...` | `project.Install("bin", [app])` |
 | `ar rcs libfoo.a $(OBJS)` | `project.StaticLibrary("foo", env, sources=[...])` |
 | `$(CC) -shared -o libfoo.so $(OBJS)` | `project.SharedLibrary("foo", env, sources=[...])` |
@@ -159,7 +159,7 @@ CPPFLAGS += -DNDEBUG -Iinclude
 env.cc.flags.extend(["-Wall", "-Wextra", "-O2"])
 env.cxx.flags.append("-std=c++17")
 env.cc.defines.append("NDEBUG")
-env.cc.include_dirs.append("include")
+env.cc.includes.append("include")
 ```
 
 Note: pcons separates defines and include dirs from raw flags. This lets toolchains apply the correct prefix (`-I` vs `/I`, `-D` vs `/D`) cross-platform.
@@ -347,8 +347,8 @@ mylib = ImportedTarget.from_package(
     PackageDescription(
         name="mylib",
         include_dirs=["/opt/mylib/include"],
-        lib_dirs=["/opt/mylib/lib"],
-        libs=["mylib"],
+        library_dirs=["/opt/mylib/lib"],
+        libraries=["mylib"],
     )
 )
 app.private.link_libs.append(mylib)

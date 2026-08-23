@@ -687,10 +687,10 @@ You can also set `PCONS_DEBUG=resolve,deps` as an environment variable.
 When configure checks produce unexpected results, `--debug=configure` shows the exact commands, compiler output, and cached results:
 
 ```bash
-pcons -C --debug=configure   # Force reconfigure with debug output
+pcons --reconfigure --debug=configure   # Re-run every check, with debug output
 ```
 
-Check results are cached in the build directory. Use `-C` (or `--reconfigure`) to force re-running all checks. The cache file is `build/configure_cache.json` — you can inspect it directly.
+Check results are cached in the build directory. Use `--reconfigure` to force re-running all checks. The cache file is `build/pcons_config.json` — you can inspect it directly. (`-C` is unrelated: like make's and ninja's, it changes directory.)
 
 ### Inspecting the build graph
 
