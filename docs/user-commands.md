@@ -1,4 +1,4 @@
-# Commands of your own
+# Custom CLI commands: `pcons run`
 
 A build script can declare commands that extend pcons' CLI. They run as
 `pcons run <name>`:
@@ -27,9 +27,8 @@ def flash(baud: int) -> None:
 $ pcons run flash --baud 9600
 ```
 
-The point is the closure. `flash` reaches `firmware` and `project` by lexical
-scope, so it knows the target's output path, the build directory and every
-variable the script read, with none of it passed in or rediscovered.
+The command contains a lexical closure of local variables, so  `flash` can access `firmware` and `project` by lexical
+scope — so it knows the target's output path, the build directory and other variables .
 
 ## Listing what is available
 
@@ -48,52 +47,46 @@ Options:
   -h, --help      Show this message and exit.
 ```
 
-`pcons run` and `pcons run --help` read the names from the build directory's
-cache, so listing never runs the build script. Two consequences:
+!!! note
+    `pcons run` and `pcons run --help` read the names from the build directory's cache, so listing never runs the build script.
 
-- A newly declared command is listed only **after the next `pcons generate`**
-  (or any build, which generates). Before that it is simply absent, with no
-  notice -- bare `pcons run` says what to do only when the build directory
-  knows of no commands at all. Running it by name works either way.
-- `pcons run <name> --help` does read the script, because only the script knows
-  the options.
-- `pcons cache clear` drops the listing along with everything else the build
-  directory persisted, so `pcons run` lists nothing again until the next
-  generate. Running a command by name is unaffected.
+    - A newly declared command is listed only **after the next `pcons generate`**
+      (or any build, which generates). Running it by name works either way.
+    - `pcons run <name> --help` does read the script, because only the script knows
+      the options.
+    - `pcons cache clear` drops the listing along with everything else the build
+      directory persisted, so `pcons run` lists nothing again until the next
+      generate. Running a command by name is unaffected.
+    - `pcons --help` before the first build shows `run` itself, because it doesn't yet know the details of your commands.
 
-`pcons --help` shows `run` itself, and nothing about your commands.
 
 ## Completion
 
-With completion installed -- `source <(_PCONS_COMPLETE=zsh_source pcons)`, or `bash_source` for
-bash -- `pcons run <TAB>` offers the script's declared names with their help. It comes from the
-build directory's cache and runs nothing: not the build script, and not an add-on module's
-`register()` either. So an add-on's commands are listed by `pcons run` but are not offered on TAB.
+With completion installed — `source <(_PCONS_COMPLETE=zsh_source pcons)`, or `bash_source` for
+bash — `pcons run <TAB>` offers the script's declared names with their help, as well as the usual completion targets. It comes from the
+build directory's cache and runs nothing (for speed). So an add-on's commands may be listed by `pcons run` but are not offered on TAB.
 Loading a module means executing it, and anything it printed would land in the middle of the
 completion protocol and be read back as candidate names.
 
-What it cannot offer is a command's own options (`pcons run flash --<TAB>`) or a group's verbs
-(`pcons run docs <TAB>`): both need the real command object, which only the build script has, and
-running a build script on a keystroke would mean configure checks between two presses of TAB.
+It can't offer a command's own options (`pcons run flash --<TAB>`) or a group's verbs (`pcons run docs <TAB>`): both need the real command object, which only the build script has, and running a build script on a keystroke would mean configure checks between two presses of TAB.
 
-## What a command gets
+## What a custom CLI command gets
 
 By the time the callback runs:
 
 - the build script has been read, and the **project is resolved**, so
   `target.output_nodes` and `project.build_dir` are populated;
-- `pcons.get_var()` and `pcons.get_variant()` answer as they do in the script
+- `pcons.get_var()` and `pcons.get_variant()` are populated as they are in the script
   body, because the command runs inside the script's live environment;
 - **no build files have been written and no build has run**, unless the command
-  declared a dependency. `pcons run` is not a general way to build.
+  declares a dependency, in which case the command is run after that build completes. See below.
 
 ## Building first
 
-A command that needs an artifact on disk names the targets it needs:
+A command that needs one or more targets names the targets it needs:
 
 ```python
 firmware = project.Program("firmware", env, ["src/main.c"])
-
 
 @project.cli_command()
 def package() -> None:
@@ -101,22 +94,20 @@ def package() -> None:
     image = Path(str(firmware.output_nodes[0].path))
     ...
 
-
 package.depends(firmware)
 ```
 
 `pcons run package` then writes the build files, builds `firmware`, and runs the
-command. If the build fails the command does not run, and `pcons run` exits with
+command. If the build fails, the command does not run, and `pcons run` exits with
 the build's own code. It all happens in one reading of the build script: the
 decision to generate is taken after the script has been read, once pcons knows
 what the command asked for.
 
-`depends` takes targets -- what `Program`, `StaticLibrary`, `Command` and the
-rest hand back -- and takes nothing else. A name or a path would have to be
-resolved against a project, and the command registry deliberately holds none.
+!!! note
+    `depends` takes targets, i.e. `Program`, `StaticLibrary`, `Command` results, not paths or strings. A string or a path would have to be
+    resolved against a project.
 
-A group declares them for all its verbs at once; a verb declares none of its
-own:
+A group can use `depends` to declare dependencies for all its grouped commands:
 
 ```python
 @project.cli_group()
@@ -131,22 +122,9 @@ Since `pcons run` can build, it takes the flags that govern building: `-j` /
 `--jobs` and `--ninja`, as `pcons build` does. Spelled before the command name
 they configure the build, spelled after it they belong to the command.
 
-**Declaring a dependency is the opt-in.** A command that declares none writes no
-build files and starts no build, so it has to cope with an artifact that may not
-exist:
-
-```python
-@project.cli_command()
-def inspect_image() -> None:
-    """Report on the image, if there is one."""
-    image = Path(str(firmware.output_nodes[0].path))
-    if not image.exists():
-        raise click.ClickException(f"{image} is not built yet. Run `pcons` first.")
-```
-
 ## Groups
 
-`cli_group` declares a group. Add verbs to it with click's own decorator, on the
+`cli_group` declares a group. Add commands to it with click's own decorator, on the
 group pcons hands back:
 
 ```python
@@ -165,9 +143,9 @@ def docs_list() -> None:
 $ pcons run docs list
 ```
 
-The verbs belong to the group, so they never collide with a top-level command
-name and pcons never sees them. One consequence of the cached listing: only the
-group's own name and help are cached, so `pcons run docs --help` runs the build
+The commands belong to the group, so they never collide with a top-level command
+name. One consequence of the cached listing: only the
+group's own name and help are cached, so `pcons run docs --help` has to run the build
 script to find its verbs.
 
 ## Failing
@@ -185,7 +163,7 @@ for pcons' own commands.
 ## Declaring from an add-on module
 
 An [add-on module](user-guide.md#add-on-modules) has no project, so it uses the
-module-level spelling from its `register()`:
+module-level form from its `register()`:
 
 ```python
 # ~/.pcons/modules/deploy.py
@@ -226,14 +204,13 @@ other name keeps working, and generating is unaffected.
 
 The decorators return real `click.Command` and `click.Group` objects. There is no
 translation layer, so `click.option`, `click.argument`, `click.Choice`,
-`click.Path`, `click.pass_context` and the rest work as they do anywhere else,
-and pcons has no opinion to learn. Names come from click too: `def build_docs`
+`click.Path`, `click.pass_context` and the rest work as they do anywhere else. Names come from click too: `def build_docs`
 becomes `build-docs`.
 
-An option is yours alone. `pcons run` declares `-B/--build-dir` for itself, and a
+A custom command option is private to that command. `pcons run` declares `-B/--build-dir` for itself, and a
 command sees it only if it declares it as well -- the callback reaches the build
 directory through the project instead. `pcons run` takes no `KEY=value` build
-variables either; a command that wants them declares its own argument, or reads
+variables either; a command that wants them should declare its own argument, or read
 `pcons.get_var()`.
 
 ## Example

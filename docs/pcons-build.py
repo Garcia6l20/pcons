@@ -53,7 +53,7 @@ project.Default(site)
 
 
 @project.cli_command()
-def showdocs() -> None:
+def dev() -> None:
     """Serve the documentation site in a browser, live-reloading on edits.
 
     Serves over HTTP rather than opening the files directly, because
@@ -90,4 +90,4 @@ def showdocs() -> None:
         server.shutdown()
 
 
-showdocs.depends(site)
+dev.depends(site)

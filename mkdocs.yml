@@ -29,20 +29,25 @@ theme:
 nav:
   - Home: index.md
   - User Guide: user-guide.md
-  - Examples: examples.md
-  - Testing: testing.md
-  - Qt: qt.md
-  - Command line: cli.md
-  - Commands of your own: user-commands.md
-  - Using pcons as a library: library.md
-  - Presets: presets.md
-  - Porting from CMake: porting-from-cmake.md
-  - Porting from Make: porting-from-make.md
+  - Guides:
+      - All Pcons Examples: examples.md
+      - Testing: testing.md
+      - Qt: qt.md
+      - Presets: presets.md
+      - Using pcons as a library: library.md
+  - Command Line:
+      - CLI reference: cli.md
+      - Adding custom CLI commands: user-commands.md
+  - Porting:
+      - Porting from CMake: porting-from-cmake.md
+      - Porting from Make: porting-from-make.md
   - Reference:
-      - Worker protocol: worker-protocol.md
+      - API Reference: api-reference.md
+      - Persistent worker protocol: worker-protocol.md
       - Architecture: architecture.md
-  - Changelog: changelog.md
-  - Contributing: contributing.md
+  - About:
+      - Changelog: changelog.md
+      - Contributing: contributing.md
 
 markdown_extensions:
   - pymdownx.highlight:

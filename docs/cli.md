@@ -83,7 +83,7 @@ environment section attributes every flag and define to the preset, variant
 or toolchain that set it (the CLI face of `env.explain()`). Runs the build
 script but writes no build files and persists nothing.
 
-Commands are spelled exactly as the build runs them — from the build
+Commands are shown exactly as the build runs them — from the build
 directory — so with `--width 0` they can be pasted into a shell there and
 re-run or hand-edited.
 
@@ -279,7 +279,7 @@ generated build directory the section is absent rather than empty.
 
 ## Options
 
-Every option below may be written before the command or after it. Spelled on
+Every option below may be written before the command or after it. If duplicated on
 both sides, the later one wins.
 
 Accepted by every command:

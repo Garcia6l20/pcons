@@ -27,9 +27,6 @@ import sys
 import threading
 from pathlib import Path
 
-REPLY_STALE = "stale"
-REPLY_UNSUPPORTED = "unsupported"
-
 
 def become_ready(modules: list[str], setup: str) -> None:
     """Do the expensive work once, in the parent, before any action runs.

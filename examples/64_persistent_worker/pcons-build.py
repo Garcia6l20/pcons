@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Running an action in a persistent worker.
 
-An action that costs more to start than to run is handed to a process that
+An action that has significant startup time can be handed to a worker process that
 has already started. See docs/worker-protocol.md for what a worker is and
-what one must do; ``PythonWorker`` here is the kind pcons bundles.
+what one must do; ``PythonWorker`` here is the one bundled with pcons.
 
 ``src/render.py`` prints whether it started with the parser already loaded,
 which is how you can see a worker was used. It is not asserted: with no

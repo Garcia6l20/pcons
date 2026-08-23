@@ -1448,7 +1448,9 @@ validated to ensure they don't conflict with user build outputs.
 ---
 
 ## File Organization
-> **Note:** This shows the file organization with implementation status.
+
+This shows the file organization with implementation status.
+
 ```
 pcons/
 ├── __init__.py
