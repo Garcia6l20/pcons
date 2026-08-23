@@ -50,3 +50,14 @@ site = env.Command(
 )
 
 project.Default(site)
+
+
+@project.cli_command()
+def showdocs() -> None:
+    """Open the documentation site in a browser (building it first)."""
+    import webbrowser
+
+    webbrowser.open((site_dir / "index.html").as_uri())
+
+
+showdocs.depends(site)

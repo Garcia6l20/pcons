@@ -78,9 +78,8 @@ clean:            ## Clean unused files.
 	@rm -rf docs/_build
 
 .PHONY: docs
-docs:             ## Build the documentation site into site/, with pcons (docs/pcons-build.py).
-	uv run pcons -C docs
-	@open site/index.html || xdg-open site/index.html
+docs:             ## Build the documentation site into site/ and open it (pcons run showdocs).
+	uv run pcons -C docs run showdocs
 
 .PHONY: docs-site
 docs-site:        ## Build and serve the documentation site (mkdocs — what ReadTheDocs publishes).
