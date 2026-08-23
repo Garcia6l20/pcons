@@ -1042,6 +1042,51 @@ class TestExtraObjectDeps:
             env.cc.Object("build/manual.o", "main.c", depnds=["x.h"])
 
 
+class TestGeneratedSourcesOfALinkedDep:
+    """A dependency's generated files order the dependent's compiles, no more.
+
+    The generated file has to exist before anything that *might* include it
+    compiles, and before the first build nothing knows which sources do. That
+    is order-only (``||``). Making it implicit (``|``) would claim every
+    translation unit consumes it, so regenerating one file would recompile
+    the whole target; the depfile already reports which ones really did.
+    """
+
+    @staticmethod
+    def _build(tmp_path, gcc_toolchain):
+        project = Project("test", root_dir=tmp_path, build_dir="build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        gen = env.Command(
+            target="build/gen.c",
+            source="gen.py",
+            command="python $SOURCE $TARGET",
+        )
+        lib = project.StaticLibrary("genlib", env, sources=[gen])
+        app = project.Program("app", env, sources=["main.c"])
+        app.link(lib)
+
+        project.resolve()
+        NinjaGenerator().generate(project)
+        BaseGenerator._generate_pending(project)
+        content = normalize_path((tmp_path / "build" / "build.ninja").read_text())
+        return content.splitlines()
+
+    def test_compiles_are_ordered_after_it_only(self, tmp_path, gcc_toolchain):
+        lines = self._build(tmp_path, gcc_toolchain)
+        obj_line = next(ln for ln in lines if ln.startswith("build obj.app/"))
+
+        assert "|| gen.c" in obj_line
+        # Not implicit: `|` would mean "this compile consumes gen.c".
+        assert " | " not in obj_line
+
+    def test_the_link_still_waits_on_it(self, tmp_path, gcc_toolchain):
+        lines = self._build(tmp_path, gcc_toolchain)
+        link_line = next(ln for ln in lines if ln.startswith("build app:"))
+
+        assert "gen.c" in link_line.split(" | ", 1)[1]
+
+
 class TestNinjaTestRule:
     def test_test_rule_quotes_spaced_python_exe(
         self, tmp_path, gcc_toolchain, monkeypatch

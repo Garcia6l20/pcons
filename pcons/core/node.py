@@ -118,27 +118,40 @@ class Node(ABC):
     - ``implicit_deps`` must be up to date before the edge runs but are NOT
       on the command line (Ninja's ``| dep`` syntax). Scanner and depfile
       results live here, and so does everything :meth:`depends` adds.
+    - ``order_only_deps`` must merely *exist* before the edge runs (Ninja's
+      ``|| dep`` syntax). Changing one does not make the edge dirty. This is
+      for a file that might or might not be consumed, where a depfile decides
+      after the fact — see :meth:`order_after`.
 
     Attributes:
         explicit_deps: Positional inputs; visible to the command as ``$in``.
         implicit_deps: Order-and-freshness-only dependencies.
+        order_only_deps: Dependencies that only constrain ordering.
         builder: The builder that produces this node (None for sources).
         defined_at: Source location where this node was created.
     """
 
-    __slots__ = ("explicit_deps", "implicit_deps", "builder", "defined_at", "_hash")
+    __slots__ = (
+        "explicit_deps",
+        "implicit_deps",
+        "order_only_deps",
+        "builder",
+        "defined_at",
+        "_hash",
+    )
 
     def __init__(self, *, defined_at: SourceLocation | None = None) -> None:
         self.explicit_deps: list[Node] = []
         self.implicit_deps: list[Node] = []
+        self.order_only_deps: list[Node] = []
         self.builder: Builder | None = None
         self.defined_at = defined_at or get_caller_location()
         self._hash: int | None = None
 
     @property
     def deps(self) -> list[Node]:
-        """All direct dependencies of this node (explicit + implicit)."""
-        return self.explicit_deps + self.implicit_deps
+        """All direct dependencies of this node, of every kind."""
+        return self.explicit_deps + self.implicit_deps + self.order_only_deps
 
     def depends(self, *nodes: Node | Sequence[Node]) -> None:
         """Add implicit dependencies (nodes or sequences of nodes).
@@ -155,6 +168,24 @@ class Node(ABC):
                 # implicit dep would just duplicate it in the build statement.
                 if node not in self.explicit_deps and node not in self.implicit_deps:
                     self.implicit_deps.append(node)
+
+    def order_after(self, *nodes: Node | Sequence[Node]) -> None:
+        """Add order-only dependencies: they must exist first, nothing more.
+
+        Weaker than :meth:`depends`. The node is built before this edge runs,
+        but changing it does not make this edge dirty — so use it when the
+        edge *might* consume the file and the compiler's depfile is what
+        settles the question. A dep already recorded as an input or an
+        implicit dep is left alone: it is strictly stronger.
+        """
+        for item in nodes:
+            for node in (item,) if isinstance(item, Node) else item:
+                if (
+                    node not in self.explicit_deps
+                    and node not in self.implicit_deps
+                    and node not in self.order_only_deps
+                ):
+                    self.order_only_deps.append(node)
 
     def add_inputs(self, *nodes: Node | Sequence[Node]) -> None:
         """Add positional inputs: dependencies the command sees as ``$in``.

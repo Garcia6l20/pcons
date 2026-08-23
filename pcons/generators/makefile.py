@@ -237,7 +237,8 @@ class MakefileGenerator(BaseGenerator):
             if isinstance(dep, FileNode) and dep.path not in source_paths_set:
                 prereqs.append(get_source_path(dep))
 
-        # Order-only prerequisites (directories)
+        # Order-only prerequisites: the output directory, plus any dep that
+        # only has to exist first (make's `|` is ninja's `||`).
         order_only: list[str] = []
         output_dir = node.path.parent
         if (
@@ -246,6 +247,12 @@ class MakefileGenerator(BaseGenerator):
             and node.role != "install_output"
         ):
             order_only.append(self._make_build_relative_path(output_dir))
+        prereq_set = set(prereqs)
+        for dep in node.order_only_deps:
+            if isinstance(dep, FileNode):
+                path = get_source_path(dep)
+                if path not in prereq_set:
+                    order_only.append(path)
 
         prereq_str = " ".join(prereqs)
         if order_only:

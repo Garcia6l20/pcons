@@ -700,7 +700,23 @@ class NinjaGenerator(BaseGenerator):
             if implicit:
                 implicit_deps = f" | {implicit}"
 
+        # Order-only dependencies (Ninja's `||`): must exist before this edge
+        # runs, but changing one does not make it dirty. A dep that is already
+        # explicit or implicit is stronger, so it never repeats here.
         order_only = ""
+        if node.order_only_deps:
+            stronger = {
+                d.path
+                for d in (*node.explicit_deps, *node.implicit_deps)
+                if isinstance(d, FileNode)
+            }
+            ordered = " ".join(
+                get_dep_path(d)
+                for d in node.order_only_deps
+                if isinstance(d, FileNode) and d.path not in stronger
+            )
+            if ordered:
+                order_only = f" || {ordered}"
 
         f.write(
             f"build {output}: {rule_name} {explicit_deps}{implicit_deps}{order_only}\n"

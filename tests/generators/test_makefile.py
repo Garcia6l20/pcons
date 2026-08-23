@@ -170,6 +170,36 @@ class TestMakefileBuildStatements:
         # Order-only prerequisite syntax: target: prereqs | order-only
         assert " | " in content
 
+    def test_order_only_deps_join_the_order_only_list(self, tmp_path):
+        """Make has no `|` implicit kind, so its `|` slot is ninja's `||`."""
+        project = Project("test", root_dir=tmp_path, build_dir=tmp_path / "build")
+
+        target = Target("app")
+        output_node = FileNode(tmp_path / "build" / "obj" / "main.o")
+        source_node = FileNode(tmp_path / "src" / "main.c")
+        generated = FileNode(tmp_path / "build" / "gen.c")
+        output_node._build_info = {
+            "tool": "cc",
+            "command_var": "cmdline",
+            "sources": [source_node],
+        }
+        output_node.builder = CommandBuilder(
+            "Object", "cc", "cmdline", src_suffixes=[".c"], target_suffixes=[".o"]
+        )
+        output_node.order_after(generated)
+
+        target.intermediate_nodes.append(output_node)
+
+        gen = MakefileGenerator()
+        gen.generate(project)
+        BaseGenerator._generate_pending(project)
+
+        content = normalize_path((tmp_path / "build" / "Makefile").read_text())
+        rule = next(ln for ln in content.splitlines() if ln.startswith("obj/main.o:"))
+        prereqs, order_only = rule.split(" | ", 1)
+        assert "gen.c" not in prereqs
+        assert "gen.c" in order_only
+
 
 class TestMakefileAliases:
     def test_writes_aliases(self, tmp_path):

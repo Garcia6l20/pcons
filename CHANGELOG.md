@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dependency's generated sources no longer recompile the whole
+  dependent.** When a target linked a library whose sources are generated,
+  every compile in that target listed the generated files as *implicit*
+  deps, so regenerating one recompiled translation units that never touched
+  it. They are now order-only (ninja `||`, make's `|`): the file still
+  exists before any compile runs, and the depfile decides which sources
+  actually included it. (#104)
+
 ## [0.28.0] - 2026-08-23
 
 ### Added

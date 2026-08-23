@@ -826,17 +826,18 @@ class CompileLinkFactory:
         # Non-link outputs from transitive deps (e.g., a generated
         # header produced by a code generator that also produces a
         # library, like cargo + cbindgen). The link step must wait on
-        # them but they don't belong on the link command line; the
-        # consumer's compile steps must also wait on them so the
-        # generated header exists by the time the compiler runs.
+        # them but they don't belong on the link command line.
+        #
+        # The compile steps need them to *exist* first -- before the first
+        # build nothing knows which translation units include them -- but
+        # that is all: order-only, so a regenerated file doesn't recompile
+        # every source in the target. From the first build onward the
+        # depfile carries the truth, and a source that really does include
+        # one gets a recorded dependency and rebuilds.
         if dep_aux:
-            for aux in dep_aux:
-                if aux not in output_node.implicit_deps:
-                    output_node.implicit_deps.append(aux)
+            output_node.depends(dep_aux)
             for inter in target.intermediate_nodes:
-                for aux in dep_aux:
-                    if aux not in inter.implicit_deps:
-                        inter.implicit_deps.append(aux)
+                inter.order_after(dep_aux)
 
         if auxiliary_inputs:
             linker_input_nodes = [node for node, _, _ in auxiliary_inputs]
