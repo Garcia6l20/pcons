@@ -54,10 +54,50 @@ project.Default(site)
 
 @project.cli_command()
 def showdocs() -> None:
-    """Open the documentation site in a browser (building it first)."""
+    """Serve the documentation site in a browser, rebuilding on edits.
+
+    Serves over HTTP rather than opening the files directly, because
+    mkdocs-material needs a real server for parts of its behavior. With
+    the optional ``watchfiles`` package installed, editing a page
+    rebuilds the site; refresh the browser to see it.
+    """
+    import functools
+    import http.server
+    import subprocess
+    import threading
     import webbrowser
 
-    webbrowser.open((site_dir / "index.html").as_uri())
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            pass  # request logging would drown the build output
+
+    handler = functools.partial(QuietHandler, directory=str(site_dir))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"Serving docs at {url}  (Ctrl-C to stop)")
+    webbrowser.open(url)
+
+    def rebuild() -> int:
+        return subprocess.run(
+            [sys.executable, "-m", "pcons", "build"], cwd=project.root_dir
+        ).returncode
+
+    from pcons import watch
+
+    try:
+        watch.ensure_available()
+    except Exception as e:
+        print(f"Not watching for edits: {e}")
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            return
+    watch.watch_and_build(
+        rebuild,
+        [project.root_dir],
+        excluded_dirs=[project.root_dir / "build"],
+    )
 
 
 showdocs.depends(site)

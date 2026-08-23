@@ -78,7 +78,7 @@ clean:            ## Clean unused files.
 	@rm -rf docs/_build
 
 .PHONY: docs
-docs:             ## Build the documentation site into site/ and open it (pcons run showdocs).
+docs:             ## Serve the documentation site in a browser, rebuilding on edits (pcons run showdocs).
 	uv run pcons -C docs run showdocs
 
 .PHONY: docs-site
