@@ -78,10 +78,9 @@ clean:            ## Clean unused files.
 	@rm -rf docs/_build
 
 .PHONY: docs
-docs:             ## Build the single-page dogfood demo (pcons building its own front page). The real site is `make docs-site`.
-	@echo "building dogfood demo page (docs/pcons-build.py) ..."
+docs:             ## Build the documentation site into site/, with pcons (docs/pcons-build.py).
 	uv run pcons -C docs
-	@open docs/build/index.html || xdg-open docs/build/index.html
+	@open site/index.html || xdg-open site/index.html
 
 .PHONY: docs-site
 docs-site:        ## Build and serve the documentation site (mkdocs — what ReadTheDocs publishes).

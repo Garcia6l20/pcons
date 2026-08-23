@@ -1,0 +1,31 @@
+# Test configuration for the custom-tools pipeline example
+
+[test]
+description = "Custom tools chained into a document pipeline (git version -> pandoc -> footer)"
+expected_outputs = [
+    "build/version.txt",
+    "build/manual.tmp.html",
+    "build/manual.html",
+]
+
+[verify]
+# The footer step must have replaced the placeholder with real version info.
+# Commands are Unix-style; automatically adapted for Windows (cat -> type)
+commands = [
+    { run = "cat build/manual.html", expect_stdout = "pcons " },
+]
+
+[[rebuild]]
+description = "No rebuild when nothing changed"
+expect_no_work = true
+
+[[rebuild]]
+description = "Editing the document reruns pandoc and the footer step, not git"
+touch = "manual.md"
+expect_rebuild = ["manual.tmp.html", "manual.html"]
+expect_no_rebuild = ["version.txt"]
+
+[skip]
+require_commands = ["pandoc", "git"]
+# Xcode generator doesn't support custom tool targets
+generators = ["xcode"]

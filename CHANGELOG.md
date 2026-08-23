@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found", and stale build files regenerate before the tests — or their
   `--list`ing — are read. `--no-build` skips the build step. (#103)
 
+- **New example: custom tools chained into a document pipeline**
+  (`examples/69_custom_tools_pipeline`), promoted from the docs tree;
+  `docs/pcons-build.py` now builds the documentation site itself.
+
 ### Changed
 
 - **Target paths may be written from the project root or the build
