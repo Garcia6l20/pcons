@@ -1080,6 +1080,40 @@ class TestGeneratedSourcesOfALinkedDep:
         # Not implicit: `|` would mean "this compile consumes gen.c".
         assert " | " not in obj_line
 
+    def test_a_depfile_less_compile_keeps_the_implicit_dep(
+        self, tmp_path, gcc_toolchain
+    ):
+        """Order-only is only right when a depfile can take over. A compile
+        with no dependency tracking (preprocessed .s assembly, resource
+        compilers) records nothing, so it must rebuild whenever the
+        generated file changes -- found by review as a silently stale
+        binary (`.include "gen.inc"` never re-assembled)."""
+        project = Project("test", root_dir=tmp_path, build_dir="build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        (tmp_path / "helper.c").write_text("int h(void){return 1;}\n")
+        (tmp_path / "val.s").write_text('.include "gen.inc"\n')
+        gen = env.Command(
+            target="gen.inc",
+            source="gen.py",
+            command="python gen.py $SOURCE $TARGET",
+        )
+        lib = project.StaticLibrary("genlib", env, sources=["helper.c"])
+        lib.link(gen)
+        app = project.Program("app", env, sources=["main.c", "val.s"])
+        app.link(lib)
+
+        project.resolve()
+        NinjaGenerator().generate(project)
+        BaseGenerator._generate_pending(project)
+        content = normalize_path((tmp_path / "build" / "build.ninja").read_text())
+        lines = content.splitlines()
+        c_line = next(ln for ln in lines if ln.startswith("build obj.app/main.c"))
+        s_line = next(ln for ln in lines if ln.startswith("build obj.app/val.s"))
+
+        assert "|| gen.inc" in c_line
+        assert "| gen.inc" in s_line and "|| gen.inc" not in s_line
+
     def test_the_link_still_waits_on_it(self, tmp_path, gcc_toolchain):
         lines = self._build(tmp_path, gcc_toolchain)
         # "app" on POSIX, "app.exe" on Windows.

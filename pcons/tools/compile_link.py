@@ -892,10 +892,14 @@ class CompileLinkFactory:
         outputs -- a generated header, say.
 
         The file has to exist before anything that might include it compiles,
-        and before the first build nothing knows which sources do. That is all
-        this states: order-only, so regenerating the file doesn't recompile
-        sources that never read it. From the first build onward the depfile
-        reports the ones that did.
+        and before the first build nothing knows which sources do. For a
+        compile that records what it read (a depfile, or MSVC's
+        /showIncludes), that is all this states: order-only, so regenerating
+        the file doesn't recompile sources that never read it -- from the
+        first build onward the recorded deps report the ones that did. A
+        compile with no dependency tracking (preprocessed assembly, resource
+        compilers) has nothing to take over, so it keeps the plain implicit
+        dep and rebuilds whenever the generated file changes.
 
         How the target itself is put together has no bearing on this, so a
         static library or an object-only target needs it exactly as much as a
@@ -909,7 +913,11 @@ class CompileLinkFactory:
         if not dep_aux:
             return
         for node in target.intermediate_nodes:
-            node.order_after(dep_aux)
+            bi = getattr(node, "_build_info", None) or {}
+            if bi.get("depfile") is not None or bi.get("deps_style"):
+                node.order_after(dep_aux)
+            else:
+                node.depends(dep_aux)
 
     def _collect_dependency_outputs(self, target: Target) -> list[FileNode]:
         """Collect output nodes from all dependencies.
