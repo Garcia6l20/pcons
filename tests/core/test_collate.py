@@ -97,6 +97,23 @@ def dyndep_text(build_dir: Path, m: dict[str, Any]) -> str:
     return (build_dir / m["dyndep"]).read_text(encoding="utf-8")
 
 
+def test_dyndep_paths_with_spaces_are_escaped(tmp_path):
+    """A discovered path may carry spaces (an install category); unescaped
+    they would split into two paths in the dyndep syntax."""
+    from pcons.core.collate import write_dyndep_entries
+
+    out = tmp_path / "x.dyndep"
+    write_dyndep_entries(
+        [("stage/My Plugin.stamp", ["staging/Sapphire Lighting/S_Glow.plugin"], [])],
+        out,
+    )
+    text = out.read_text()
+    assert (
+        "build stage/My$ Plugin.stamp | staging/Sapphire$ Lighting/S_Glow.plugin: dyndep"
+        in text
+    )
+
+
 class TestWriteTextIfChanged:
     """The content-addressed write helper."""
 

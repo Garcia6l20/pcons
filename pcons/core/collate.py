@@ -110,6 +110,11 @@ def write_text_if_changed(path: Path, text: str) -> None:
     digest_file.write_bytes(digest)
 
 
+def _dyndep_escape(path: str) -> str:
+    """Escape one path for ninja dyndep syntax: space, colon, and ``$``."""
+    return path.replace("$", "$$").replace(" ", "$ ").replace(":", "$:")
+
+
 def write_dyndep_entries(
     entries: list[tuple[str, list[str], list[str]]],
     out_path: str | Path,
@@ -118,17 +123,19 @@ def write_dyndep_entries(
 
     Each entry is ``(edge_output_rel, provides_paths, requires_paths)`` where
     the provides/requires are build-dir-relative artifact paths. Entries are
-    emitted sorted by output; each entry's paths are deduped and sorted.
+    emitted sorted by output; each entry's paths are deduped, sorted, and
+    escaped — a discovered path may carry spaces (an install category, a
+    spaced build tree) that would otherwise split into two paths.
     """
     lines = ["ninja_dyndep_version = 1", ""]
     for obj_rel, provides_pcms, requires_pcms in sorted(entries, key=lambda e: e[0]):
-        implicit_out = (
-            " | " + " ".join(sorted(set(provides_pcms))) if provides_pcms else ""
+        provides = [_dyndep_escape(p) for p in sorted(set(provides_pcms))]
+        requires = [_dyndep_escape(p) for p in sorted(set(requires_pcms))]
+        implicit_out = " | " + " ".join(provides) if provides else ""
+        implicit_in = " | " + " ".join(requires) if requires else ""
+        lines.append(
+            f"build {_dyndep_escape(obj_rel)}{implicit_out}: dyndep{implicit_in}"
         )
-        implicit_in = (
-            " | " + " ".join(sorted(set(requires_pcms))) if requires_pcms else ""
-        )
-        lines.append(f"build {obj_rel}{implicit_out}: dyndep{implicit_in}")
         lines.append("")
 
     write_text_if_changed(Path(out_path), "\n".join(lines))
