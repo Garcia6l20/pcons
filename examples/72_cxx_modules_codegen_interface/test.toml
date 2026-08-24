@@ -1,0 +1,57 @@
+# Test configuration for the generated-module-interface example
+
+[test]
+description = "A C++20 module interface unit written by a program the build compiles: the suffix is static, the scan waits for the generator, and the BMI is discovered"
+
+expected_outputs = [
+    "build/geniface",
+    "build/gen/iface.cppm",
+    "build/obj.genmod/gen/iface.cppm.o",
+    "build/libgenmod.a",
+    "build/obj.app/src/main.cpp.o",
+    "build/app",
+    "build/scan/cxx-modules/cxx_modules_codegen_interface.genmod.dyndep",
+    "build/scan/cxx-modules/cxx_modules_codegen_interface.app.dyndep",
+]
+
+[toolchains]
+linux = ["gcc", "llvm"]
+darwin = ["llvm"]
+windows = ["msvc", "gcc"]
+
+[verify]
+# main.cpp says `import gen;` and checks `value() == 7`, so a zero exit means
+# the generated interface was compiled as a module and its BMI reached the
+# consumer's command line.
+commands = [{ run = "./build/app", expect_returncode = 0 }]
+
+[[rebuild]]
+description = "No rebuild when nothing changed"
+expect_no_work = true
+
+[[rebuild]]
+description = "Touching the interface generator regenerates the .cppm and recompiles everything downstream of it"
+touch = "src/geniface.cpp"
+expect_rebuild = [
+    "obj.geniface/src/geniface.cpp.o",
+    "geniface",
+    "gen/iface.cppm",
+    "obj.genmod/gen/iface.cppm.o",
+    "libgenmod.a",
+    "obj.app/src/main.cpp.o",
+    "app",
+]
+run = "./build/app"
+expect_returncode = 0
+
+[[rebuild]]
+description = "Touching the consumer recompiles only it, not the generated interface"
+touch = "src/main.cpp"
+expect_rebuild = ["obj.app/src/main.cpp.o", "app"]
+expect_no_rebuild = ["gen/iface.cppm", "obj.genmod/gen/iface.cppm.o", "geniface"]
+
+[skip]
+# Named modules: MSVC scans natively (cl.exe), GCC via g++, clang via
+# clang-scan-deps. Gate per toolchain so an MSVC-only Windows host still runs.
+requires_cxx_modules = true
+generators = ["make", "xcode"]
