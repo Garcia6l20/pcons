@@ -24,10 +24,14 @@ every decision pcons has to make at configure time is already available:
 
 import platform
 
-from pcons import Project
+from pcons import Project, get_var
 
 project = Project("cxx_modules_codegen_interface")
-env = project.Environment(toolchain=["llvm", "c"])
+# The test harness selects a toolchain per platform via TOOLCHAIN;
+# without it, prefer whatever this host has.
+env = project.Environment(
+    toolchain=get_var("TOOLCHAIN", "") or ["llvm", "msvc", "gcc", "c"]
+)
 env.cxx.set_standard("c++20")
 
 gen_dir = project.build_dir / "gen"

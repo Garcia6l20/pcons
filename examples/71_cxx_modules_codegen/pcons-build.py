@@ -27,10 +27,14 @@ and the compile order between the two is discovered, not declared.
 
 import platform
 
-from pcons import Project
+from pcons import Project, get_var
 
 project = Project("cxx_modules_codegen")
-env = project.Environment(toolchain=["llvm", "c"])
+# The test harness selects a toolchain per platform via TOOLCHAIN;
+# without it, prefer whatever this host has.
+env = project.Environment(
+    toolchain=get_var("TOOLCHAIN", "") or ["llvm", "msvc", "gcc", "c"]
+)
 env.cxx.set_standard("c++20")
 
 # The module interface, and the generator that writes the source importing it.
