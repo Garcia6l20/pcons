@@ -1537,11 +1537,12 @@ def _cache_show(build_dir: Path) -> int:
 def _cache_clear(build_dir: Path) -> int:
     """Discard everything this build directory remembers.
 
-    The persisted settings, and the C++ module scan results beside them: both
-    are answers from an earlier run, and asking for them to be forgotten means
-    both. Deleting the scan cache costs one rescan.
+    The persisted settings, plus the module scan cache an older pcons may
+    have left beside them — nothing writes pcons_scan_cache.json anymore
+    (per-TU scan edges keep their answers in ninja's own logs), so clearing
+    is the one place that still knows the name.
     """
-    from pcons.toolchains._scan_cache import CACHE_FILE as SCAN_CACHE_FILE
+    SCAN_CACHE_FILE = "pcons_scan_cache.json"
 
     cache = _open_cache(build_dir)
     cleared: list[Path] = []

@@ -4302,7 +4302,7 @@ class TestCacheCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """Both files are answers from an earlier run, so both go."""
-        from pcons.toolchains._scan_cache import CACHE_FILE as SCAN_CACHE_FILE
+        SCAN_CACHE_FILE = "pcons_scan_cache.json"
 
         build_dir = self._populate(tmp_path, monkeypatch)
         scan_cache = build_dir / SCAN_CACHE_FILE
@@ -4316,7 +4316,7 @@ class TestCacheCommand:
         self, tmp_path: Path, capsys
     ) -> None:
         """A build dir can hold scan results and no persisted settings."""
-        from pcons.toolchains._scan_cache import CACHE_FILE as SCAN_CACHE_FILE
+        SCAN_CACHE_FILE = "pcons_scan_cache.json"
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()

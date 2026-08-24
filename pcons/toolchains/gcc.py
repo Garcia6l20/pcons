@@ -548,20 +548,31 @@ class GccToolchain(UnixToolchain):
         if std_key not in keys:
             return {}, None
 
+        # Like the LLVM and MSVC versions: a missing module source skips
+        # that one module with a warning, and only losing *std itself*
+        # disables the mechanism — std.compat is unusable without it anyway,
+        # and an error about a module the project never imports helps no one.
         sources: dict[str, Path] = {}
         for logical in ("std", "std.compat"):
             src_path = _find_gcc_std_module_source(compiler_cmd, logical, base_flags)
             if src_path is None:
-                return {}, (
-                    f"`import {logical};` needs the GCC standard-library "
-                    f"module source, which pcons could not locate via GCC "
-                    f"include tracing:\n"
-                    f"    {compiler_cmd} ... -E -x c++ - -H  "
-                    f"(with #include <bits/...>)\n"
-                    f"Requires GCC 15+ with libstdc++ headers installed. "
-                    f"On Ubuntu/Debian: apt install gcc g++ libstdc++-15-dev"
+                logger.warning(
+                    "GCC standard-library module source for %s not found; "
+                    "skipping that module",
+                    logical,
                 )
-            sources[logical] = src_path
+            else:
+                sources[logical] = src_path
+        if "std" not in sources:
+            return {}, (
+                f"`import std;` needs the GCC standard-library module "
+                f"source, which pcons could not locate via GCC include "
+                f"tracing:\n"
+                f"    {compiler_cmd} ... -E -x c++ - -H  "
+                f"(with #include <bits/...>)\n"
+                f"Requires GCC 15+ with libstdc++ headers installed. "
+                f"On Ubuntu/Debian: apt install gcc g++ libstdc++-15-dev"
+            )
 
         build_dir = project.build_dir
         build_dir_fs = (
@@ -574,14 +585,16 @@ class GccToolchain(UnixToolchain):
         # imported one from the mapper; one static file serves both edges.
         mapper_rel = f"{std_moddir}/std.modmap"
         mapper_lines = ["$root ."]
-        for logical in ("std", "std.compat"):
+        for logical in sources:
             mapper_lines.append(f"{logical} {std_moddir}/{logical}.gcm")
         write_text_if_changed(build_dir_fs / mapper_rel, "\n".join(mapper_lines) + "\n")
 
         exports_modules: dict[str, dict[str, object]] = {}
         prev_pcm_node: FileNode | None = None
         for logical in ("std", "std.compat"):
-            src_path = sources[logical]
+            src_path = sources.get(logical)
+            if src_path is None:
+                continue
             gcm_rel = f"{std_moddir}/{logical}.gcm"
             obj_rel = f"{std_moddir}/{logical}.o"
             std_obj_node = project.node(build_dir / obj_rel)
