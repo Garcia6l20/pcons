@@ -84,11 +84,17 @@ class EdgeArgsSpec:
     ``var`` — is baked into the command at configure time; only the file's
     *content* is decided at build time by collate. This is how content-derived
     flags reach a command line that dyndep alone could never alter.
+
+    ``token=None`` skips appending anything to the governed command — for a
+    toolchain that places the reference itself (a flag that must precede the
+    source file can't ride an appended token). ``var=None`` likewise skips
+    the variable. The args file is still declared, and collate still writes
+    it.
     """
 
     suffix: str = ".modmap"
-    var: str = "SCAN_ARGS"
-    token: str = "@$SCAN_ARGS"
+    var: str | None = "SCAN_ARGS"
+    token: str | None = "@$SCAN_ARGS"
     format: ArgsFormat = field(default_factory=ArgsFormat)
     include: Literal["requires", "requires+provides"] = "requires+provides"
 
@@ -132,13 +138,31 @@ class Scanner:
             rule.
         collate_command: Override for the collate command tokens; ``None``
             uses the generic collate CLI (``python -m pcons.core.collate``).
-            A custom collate receives ``--manifest <path>`` semantics of its
-            own choosing — pcons appends nothing.
+            A custom command may reference ``NodeVar("SCAN_MANIFEST")`` —
+            every collate edge carries its scope's manifest path under that
+            variable, so all scopes still share one rule.
+        manifest_extra: Optional callable ``(env, target) -> dict`` merged
+            into the scope's manifest under ``"extra"`` — for a custom
+            collate that needs facts beyond the neutral schema (a
+            toolchain's BMI directory, say). JSON-serializable values only.
+        edge_extra: Like ``manifest_extra``, per governed edge:
+            ``(env, scanned_sources, governed_node) -> dict``, merged into
+            that edge's manifest entry under ``"extra"``.
         provide_template: Artifact path for a provided logical name when the
             scan info gives none; ``{name}`` (sanitized), ``{scanner}`` and
             ``{scope}`` substitute.
         edge_args: Optional per-edge args file written by collate (see
             :class:`EdgeArgsSpec`).
+        link_args: Optional per-*scope* args file for the target's final
+            link edges — extra link inputs collate discovers (a standard
+            library module's object, say). One file per scope, wired to the
+            target's output edges: the file is an implicit dep (content
+            changes re-link; the collate's restat keeps no-op rewrites
+            quiet), the spec's var/token add the reference to the command.
+        link_args_target_types: Apply ``link_args`` only to targets of
+            these ``target_type`` strings (e.g. programs and shared
+            libraries — an archiver takes no response file). Empty means
+            all.
         on_unresolved: What the generic collate does with a require no scope
             provides: ``"ignore"`` (may be satisfied externally), ``"warn"``,
             or ``"error"``.
@@ -151,8 +175,12 @@ class Scanner:
     scan_depfile: str | None = None
     scan_deps_style: Literal["gcc", "msvc"] = "gcc"
     scan_deps: tuple[str, ...] = ()
-    scan_vars: Callable[[Any, list[FileNode], FileNode], dict[str, str]] | None = None
+    scan_vars: Callable[[Any, list[FileNode], FileNode], dict[str, Any]] | None = None
     collate_command: tuple[Any, ...] | None = None
+    manifest_extra: Callable[[Any, Any], dict[str, Any]] | None = None
+    edge_extra: Callable[[Any, list[FileNode], FileNode], dict[str, Any]] | None = None
+    link_args: EdgeArgsSpec | None = None
+    link_args_target_types: tuple[str, ...] = ()
     provide_template: str = "scan/{scanner}/provided/{name}"
     edge_args: EdgeArgsSpec | None = None
     on_unresolved: Literal["ignore", "warn", "error"] = "ignore"
@@ -167,11 +195,16 @@ class Scanner:
         scan_depfile: str | None = None,
         scan_deps_style: Literal["gcc", "msvc"] = "gcc",
         scan_deps: Sequence[str] = (),
-        scan_vars: Callable[[Any, list[FileNode], FileNode], dict[str, str]]
+        scan_vars: Callable[[Any, list[FileNode], FileNode], dict[str, Any]]
         | None = None,
         collate_command: Sequence[Any] | None = None,
+        manifest_extra: Callable[[Any, Any], dict[str, Any]] | None = None,
+        edge_extra: Callable[[Any, list[FileNode], FileNode], dict[str, Any]]
+        | None = None,
         provide_template: str = "scan/{scanner}/provided/{name}",
         edge_args: EdgeArgsSpec | None = None,
+        link_args: EdgeArgsSpec | None = None,
+        link_args_target_types: Sequence[str] = (),
         on_unresolved: Literal["ignore", "warn", "error"] = "ignore",
     ) -> None:
         # A hand-written __init__ (rather than the dataclass one) so sequence
@@ -190,8 +223,14 @@ class Scanner:
             "collate_command",
             tuple(collate_command) if collate_command is not None else None,
         )
+        object.__setattr__(self, "manifest_extra", manifest_extra)
+        object.__setattr__(self, "edge_extra", edge_extra)
         object.__setattr__(self, "provide_template", provide_template)
         object.__setattr__(self, "edge_args", edge_args)
+        object.__setattr__(self, "link_args", link_args)
+        object.__setattr__(
+            self, "link_args_target_types", tuple(link_args_target_types)
+        )
         object.__setattr__(self, "on_unresolved", on_unresolved)
         self._validate()
 
@@ -263,6 +302,16 @@ class ScanScope:
 def _rule_ident(name: str) -> str:
     """A scanner name as a ninja-rule-safe identifier fragment."""
     return name.replace("-", "_")
+
+
+def scope_id_for(target: Target) -> str:
+    """The file-system identifier a target's scan scope uses.
+
+    Public so a toolchain's ``manifest_extra`` can name per-scope paths (a
+    BMI directory, say) the same way the wiring pass names the manifest and
+    dyndep files.
+    """
+    return _SCOPE_ID_RE.sub("_", target.qualified_name.replace("::", "."))
 
 
 class ScannerResolver:
@@ -351,7 +400,7 @@ class ScannerResolver:
             info_node = self._make_scan_node(target, scanner, env, governed, scanned)
             info_nodes.append(info_node)
             manifest_edges.append(
-                self._manifest_edge(scanner, governed, info_node, rel)
+                self._manifest_edge(scanner, env, governed, scanned, info_node, rel)
             )
 
         # --- imports: exports of scanned dependency scopes --------------
@@ -368,12 +417,20 @@ class ScannerResolver:
         # in sys.modules when runpy executes it.
         from pcons.core.collate import MANIFEST_VERSION, write_text_if_changed
 
+        link_args_rel: str | None = None
+        if scanner.link_args is not None and (
+            not scanner.link_args_target_types
+            or target.target_type in scanner.link_args_target_types
+        ):
+            link_args_rel = f"{base_rel}/{scope_id}{scanner.link_args.suffix}"
+
         manifest = {
             "version": MANIFEST_VERSION,
             "scanner": scanner.name,
             "scope": scope_id,
             "dyndep": dyndep_rel,
             "exports_out": exports_rel,
+            "link_args_file": link_args_rel,
             "imports": [s.exports_rel for s in import_scopes],
             "provide_template": scanner.provide_template,
             "on_unresolved": scanner.on_unresolved,
@@ -392,6 +449,8 @@ class ScannerResolver:
             ),
             "edges": manifest_edges,
         }
+        if scanner.manifest_extra is not None:
+            manifest["extra"] = scanner.manifest_extra(env, target)
         write_text_if_changed(
             build_dir_fs / manifest_rel,
             json.dumps(manifest, indent=1, sort_keys=True) + "\n",
@@ -417,6 +476,12 @@ class ScannerResolver:
             "dyndep": {"path": collate_node.path, "implicit": False},
             "exports": {"path": exports_node.path, "implicit": True},
         }
+        link_args_node: FileNode | None = None
+        if link_args_rel is not None:
+            assert isinstance(link_args_rel, str)
+            link_args_node = project.node(build_dir / link_args_rel)
+            link_args_node._build_info = {"primary_node": collate_node}
+            outputs["link_args"] = {"path": link_args_node.path, "implicit": True}
         if scanner.edge_args:
             for i, (governed, _) in enumerate(edges):
                 args_path = governed.path.with_name(
@@ -425,14 +490,14 @@ class ScannerResolver:
                 outputs[f"args_{i}"] = {"path": args_path, "implicit": True}
 
         collate_cmd: list[Any]
-        collate_vars: dict[str, str] = {}
+        # The manifest path rides on a per-edge variable, so every scope's
+        # collate shares ONE ninja rule (a rule is identified by its command
+        # text; a literal path here would mint a rule per target). Custom
+        # collate commands get the same variable.
+        collate_vars: dict[str, str] = {"SCAN_MANIFEST": manifest_rel}
         if scanner.collate_command is not None:
             collate_cmd = list(scanner.collate_command)
         else:
-            # The manifest path rides on a per-edge variable, so every
-            # scope's collate shares ONE ninja rule (a rule is identified
-            # by its command text; a literal path here would mint a rule
-            # per target).
             collate_cmd = [
                 sys.executable,
                 "-m",
@@ -440,7 +505,6 @@ class ScannerResolver:
                 "--manifest",
                 NodeVar("SCAN_MANIFEST"),
             ]
-            collate_vars["SCAN_MANIFEST"] = manifest_rel
         collate_node._build_info = {
             "tool": f"collate_{_rule_ident(scanner.name)}",
             "command_var": "collatecmd",
@@ -451,11 +515,13 @@ class ScannerResolver:
             "description": f"COLLATE[{scanner.name}] $out",
             "env": env,
         }
-        if collate_vars:
-            collate_node._build_info["vars"] = collate_vars
+        collate_node._build_info["vars"] = collate_vars
         exports_node._build_info = {"primary_node": collate_node}
         env.register_node(collate_node)
         env.register_node(exports_node)
+        if link_args_node is not None and link_args_rel is not None:
+            env.register_node(link_args_node)
+            self._wire_link_args(scanner, target, link_args_node, link_args_rel)
 
         # --- govern the edges --------------------------------------------
         for governed, _ in edges:
@@ -470,20 +536,28 @@ class ScannerResolver:
                     f"'{dyndep_rel}'. One edge takes one dyndep file."
                 )
             bi["dyndep"] = dyndep_rel
-            if collate_node not in governed.implicit_deps:
-                governed.implicit_deps.append(collate_node)
+            # Order-only, not implicit: the edge must wait for the dyndep
+            # file to exist, but a rewritten dyndep must not by itself dirty
+            # every governed edge — the *loaded* dyndep adds the real
+            # dependencies, and those carry change propagation. (Ninja
+            # accepts the dyndep file in order-only position; an implicit
+            # dep here would rebuild the whole scope whenever any one TU's
+            # import set changed.)
+            governed.order_after(collate_node)
             if scanner.edge_args:
                 args_rel = rel(governed.path) + scanner.edge_args.suffix
-                node_vars = bi.get("vars")
-                if node_vars is None:
-                    node_vars = {}
-                    bi["vars"] = node_vars
-                node_vars[scanner.edge_args.var] = args_rel
-                extra = bi.get("extra_command_flags")
-                if extra is None:
-                    extra = []
-                    bi["extra_command_flags"] = extra
-                extra.append(scanner.edge_args.token)
+                if scanner.edge_args.var is not None:
+                    node_vars = bi.get("vars")
+                    if node_vars is None:
+                        node_vars = {}
+                        bi["vars"] = node_vars
+                    node_vars[scanner.edge_args.var] = args_rel
+                if scanner.edge_args.token is not None:
+                    extra = bi.get("extra_command_flags")
+                    if extra is None:
+                        extra = []
+                        bi["extra_command_flags"] = extra
+                    extra.append(scanner.edge_args.token)
 
         project._scan_scopes[key] = ScanScope(
             scanner=scanner,
@@ -523,7 +597,7 @@ class ScannerResolver:
         return edges
 
     def _scope_id(self, scanner: Scanner, target: Target) -> str:
-        scope_id = _SCOPE_ID_RE.sub("_", target.qualified_name.replace("::", "."))
+        scope_id = scope_id_for(target)
         claim = (scanner.name, scope_id)
         owner = self._scope_ids.get(claim)
         if owner is not None and owner != target.qualified_name:
@@ -578,10 +652,46 @@ class ScannerResolver:
         env.register_node(info_node)
         return info_node
 
+    def _wire_link_args(
+        self,
+        scanner: Scanner,
+        target: Target,
+        link_args_node: FileNode,
+        link_args_rel: str,
+    ) -> None:
+        """Attach the scope's link-args file to the target's output edges.
+
+        Implicit dep, not order-only: the file's *content* is extra link
+        inputs, so a change must re-run the link. The collate's restat plus
+        write-if-changed keeps a no-op rewrite from doing so.
+        """
+        spec = scanner.link_args
+        assert spec is not None
+        for node in target.output_nodes:
+            bi = node._build_info
+            if bi is None or "primary_node" in bi:
+                continue
+            if link_args_node not in node.implicit_deps:
+                node.implicit_deps.append(link_args_node)
+            if spec.var is not None:
+                node_vars = bi.get("vars")
+                if node_vars is None:
+                    node_vars = {}
+                    bi["vars"] = node_vars
+                node_vars[spec.var] = link_args_rel
+            if spec.token is not None:
+                extra = bi.get("extra_command_flags")
+                if extra is None:
+                    extra = []
+                    bi["extra_command_flags"] = extra
+                extra.append(spec.token)
+
     def _manifest_edge(
         self,
         scanner: Scanner,
+        env: Environment,
         governed: FileNode,
+        scanned: list[FileNode],
         info_node: FileNode,
         rel: Callable[[Path | str], str],
     ) -> dict[str, Any]:
@@ -597,4 +707,6 @@ class ScannerResolver:
         }
         if scanner.edge_args:
             edge["args_file"] = rel(governed.path) + scanner.edge_args.suffix
+        if scanner.edge_extra is not None:
+            edge["extra"] = scanner.edge_extra(env, scanned, governed)
         return edge

@@ -340,7 +340,9 @@ class TestCollateEdge:
         info = project.node(Path("build/scan/scene-refs/t.pack_a.dyndep"))._build_info
 
         assert info["command"] == ["my-collate", "-q"]
-        assert "SCAN_MANIFEST" not in info.get("vars", {})
+        # A custom command may reference NodeVar("SCAN_MANIFEST"); the
+        # variable is supplied either way.
+        assert info["vars"]["SCAN_MANIFEST"] == "scan/scene-refs/t.pack_a.manifest.json"
 
     def test_exports_node_is_a_secondary_output_of_collate(self, tmp_path, monkeypatch):
         project, _, _, _ = reference_project(tmp_path, monkeypatch)
@@ -390,12 +392,15 @@ class TestGovernedEdge:
             b.output_nodes[0]._build_info["dyndep"] == "scan/scene-refs/t.pack_b.dyndep"
         )
 
-    def test_collate_node_is_an_implicit_dep(self, tmp_path, monkeypatch):
+    def test_collate_node_is_an_order_only_dep(self, tmp_path, monkeypatch):
+        """Order-only: a rewritten dyndep must not by itself dirty every
+        governed edge — the loaded dyndep's real deps carry propagation."""
         project, _, a, _ = reference_project(tmp_path, monkeypatch)
 
         collate = project.node(Path("build/scan/scene-refs/t.pack_a.dyndep"))
 
-        assert collate in a.output_nodes[0].implicit_deps
+        assert collate in a.output_nodes[0].order_only_deps
+        assert collate not in a.output_nodes[0].implicit_deps
 
     def test_unscanned_edge_keeps_no_dyndep(self, tmp_path, monkeypatch):
         project = make_project(tmp_path, monkeypatch)

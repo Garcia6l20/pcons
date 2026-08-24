@@ -39,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -450,6 +451,17 @@ def run_scan_deps_gcc(
 # edits that change a TU's imports re-trigger it without re-running pcons.
 # =============================================================================
 
+CLANG_SCAN_DEPS_HINTS = (
+    "C++ module scanner 'clang-scan-deps' not found on PATH.\n"
+    "  C++20 modules require clang-scan-deps (shipped with LLVM/Clang).\n"
+    "  Install hints:\n"
+    "    macOS:        brew install llvm  (then add the keg's bin to PATH)\n"
+    "    Ubuntu/Deb:   apt install clang-tools  (or a recent LLVM via apt.llvm.org)\n"
+    "    Fedora/RHEL:  dnf install clang-tools-extra\n"
+    "    Windows:      winget install LLVM.LLVM  (or use the LLVM installer)\n"
+    "  Or set env.cxx.scan_deps to the full path of your clang-scan-deps."
+)
+
 MANIFEST_FILE = "cxx_modules.manifest.json"
 
 
@@ -615,6 +627,73 @@ def select_modules_scope(
         [pair for pair in cxx_module_pairs if _belongs(pair[1])],
         [pair for pair in cxx_pairs if _belongs(pair[1])],
     )
+
+
+@dataclass
+class ModuleScope:
+    """One scanned target: the unit a per-target module pass works on.
+
+    ``pairs`` are ``(source_path, obj_node, is_module_suffix)`` for every C++
+    TU whose object this target *owns*. An object the resolver's cache shares
+    between targets belongs to the first target that claims it (declaration
+    order); the others reach its modules through that scope's exports.
+    """
+
+    target: Any
+    env: Any
+    pairs: list[tuple[Path, Any, bool]]
+
+
+def collect_module_scopes(
+    project: Any,
+    source_obj_by_language: dict[str, list[tuple[Path, Any]]],
+) -> list[ModuleScope]:
+    """Group the scanned TUs by owning target, in declaration order.
+
+    Applies :func:`select_modules_scope`'s env opt-in rules, then assigns
+    each object node to exactly one target — the dyndep contract: one edge,
+    one governing dyndep file.
+    """
+    cxx_module_pairs, cxx_pairs = select_modules_scope(source_obj_by_language)
+    if not cxx_module_pairs and not cxx_pairs:
+        return []
+
+    tagged = [(src, obj, True) for src, obj in cxx_module_pairs]
+    tagged += [(src, obj, False) for src, obj in cxx_pairs]
+    by_obj = {id(obj): (src, obj, is_mod) for src, obj, is_mod in tagged}
+
+    scopes: list[ModuleScope] = []
+    claimed: set[int] = set()
+    for target in project.targets:
+        pairs: list[tuple[Path, Any, bool]] = []
+        for node in target.intermediate_nodes:
+            entry = by_obj.get(id(node))
+            if entry is not None and id(node) not in claimed:
+                claimed.add(id(node))
+                pairs.append(entry)
+        if pairs:
+            env = getattr(pairs[0][1], "_build_info", {}).get("env")
+            scopes.append(ModuleScope(target=target, env=env, pairs=pairs))
+    return scopes
+
+
+def find_scan_deps(env: Any, tool_names: list[str], hints: str) -> str:
+    """The module scanner executable for *env*, checked at configure time.
+
+    ``env.cxx.scan_deps`` overrides the search — the escape hatch the
+    not-found error has always promised. Raises
+    :class:`CxxModuleScannerNotFound` with install *hints* when nothing is
+    found, at configure time, where the message can still help.
+    """
+    cxx = getattr(env, "cxx", None)
+    override = getattr(cxx, "scan_deps", None) if cxx is not None else None
+    if override:
+        return str(override)
+    for name in tool_names:
+        found = shutil.which(name)
+        if found:
+            return found
+    raise CxxModuleScannerNotFound(hints)
 
 
 def spec_cache_key(spec: TuScanSpec, scanner_style: str) -> str:
