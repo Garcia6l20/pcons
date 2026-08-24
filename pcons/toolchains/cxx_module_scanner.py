@@ -143,13 +143,33 @@ class ModuleScope:
 def collect_module_scopes(
     project: Any,
     source_obj_by_language: dict[str, list[tuple[Path, Any]]],
+    toolchain: Any = None,
 ) -> list[ModuleScope]:
     """Group the scanned TUs by owning target, in declaration order.
 
     Applies :func:`select_modules_scope`'s env opt-in rules, then assigns
     each object node to exactly one target — the dyndep contract: one edge,
     one governing dyndep file.
+
+    ``after_resolve`` hands every toolchain the project-wide map, so pass
+    the calling *toolchain* to keep the scope to TUs whose environment
+    actually uses it — otherwise a gcc toolchain would claim clang's
+    objects and each would attach its own scanner to the other's targets.
     """
+
+    def _uses_toolchain(obj_node: Any) -> bool:
+        if toolchain is None:
+            return True
+        bi = getattr(obj_node, "_build_info", None)
+        env = bi.get("env") if bi else None
+        return env is not None and any(
+            tc is toolchain for tc in getattr(env, "toolchains", ())
+        )
+
+    source_obj_by_language = {
+        lang: [pair for pair in pairs if _uses_toolchain(pair[1])]
+        for lang, pairs in source_obj_by_language.items()
+    }
     cxx_module_pairs, cxx_pairs = select_modules_scope(source_obj_by_language)
     if not cxx_module_pairs and not cxx_pairs:
         return []

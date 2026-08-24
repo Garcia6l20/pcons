@@ -441,6 +441,7 @@ class TestMsvcModulesBmiKeying:
                 cmd="cl.exe", flags=["/nologo"], defines=[], dprefix="/D"
             ),
             register_node=lambda _node: None,
+            toolchains=(tc,),
         )
 
         def make_obj(path, flags):

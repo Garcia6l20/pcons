@@ -682,7 +682,10 @@ class ScannerResolver:
         inherited = [
             dep
             for dep in (*governed.implicit_deps, *governed.order_only_deps)
-            if isinstance(dep, FileNode)
+            # Not the scan output itself: a toolchain may hang the governed
+            # edge's header tracking on its own scan node (GCC's module
+            # interfaces do), which would read back here as a self-cycle.
+            if isinstance(dep, FileNode) and dep is not info_node
         ]
         if inherited:
             info_node.order_after(inherited)

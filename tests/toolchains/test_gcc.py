@@ -415,6 +415,7 @@ class TestGccModulesDepsTracking:
         env = SimpleNamespace(
             cxx=SimpleNamespace(cmd="g++", flags=[], defines=[], dprefix="-D"),
             register_node=lambda _node: None,
+            toolchains=(tc,),
         )
 
         def make_obj(path: str) -> FileNode:

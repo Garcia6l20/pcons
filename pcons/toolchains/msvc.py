@@ -905,7 +905,7 @@ class MsvcToolchain(MsvcCompatibleToolchain):
             merge_scan_compile_flags,
         )
 
-        scopes = collect_module_scopes(project, source_obj_by_language)
+        scopes = collect_module_scopes(project, source_obj_by_language, self)
         if not scopes:
             return
         flag_spec = _msvc_std_module_flag_spec()
