@@ -82,14 +82,14 @@ def adapt_path_for_windows(path: str, gcc_toolchain: bool = False) -> str:
         # Convert libfoo.a to foo.lib
         import re
 
-        path = re.sub(r"\\lib([^\\]+)\.a$", r"\\\1.lib", path)
+        path = re.sub(r"(^|\\)lib([^\\]+)\.a$", r"\1\2.lib", path)
         if path.endswith(".a"):  # Didn't match lib prefix
             path = path[:-2] + ".lib"
     elif path.endswith(".so"):
         # Convert libfoo.so to foo.dll
         import re
 
-        path = re.sub(r"\\lib([^\\]+)\.so$", r"\\\1.dll", path)
+        path = re.sub(r"(^|\\)lib([^\\]+)\.so$", r"\1\2.dll", path)
         if path.endswith(".so"):  # Didn't match lib prefix
             path = path[:-3] + ".dll"
 

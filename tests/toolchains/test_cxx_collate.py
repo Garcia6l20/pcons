@@ -962,11 +962,16 @@ class TestValidation:
         provider = (tmp_path / "obj.app/mod.cppm.o.modmap").read_text().splitlines()
         importer = (tmp_path / "obj.app/main.cpp.o.modmap").read_text().splitlines()
         assert provider[0] == "/interface"
-        assert "/ifcOutput" in provider
-        assert provider[provider.index("/ifcOutput") + 1].endswith(".ifc")
-        assert "/reference" in importer
-        assert importer[importer.index("/reference") + 1].startswith("M=")
-        assert importer[importer.index("/reference") + 1].endswith(".ifc")
+        # Flag and argument share a line: cl.exe does not join across
+        # response-file lines (D8004).
+        assert any(
+            line.startswith("/ifcOutput ") and line.endswith(".ifc")
+            for line in provider
+        )
+        assert any(
+            line.startswith("/reference M=") and line.endswith(".ifc")
+            for line in importer
+        )
 
     def test_gcc_style_modmap_is_a_module_mapper(self, tmp_path: Path) -> None:
         """GCC gets the libcody mapper dialect: provides and the transitive

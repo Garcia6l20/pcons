@@ -528,19 +528,17 @@ def _msvc_modmap(edge: _Edge, modules: list[_Module]) -> str:
     to write its IFC; every TU gets an explicit ``/reference name=path`` per
     transitively imported module, replacing ``/ifcSearchDir``.
     """
-    # Response files split on whitespace, so a flag and its argument are
-    # separate lines — quoting "/ifcOutput <path>" whole would glue them
-    # into one unrecognized argument.
+    # cl.exe does not join a flag on one response-file line with an
+    # argument on the next (D8004), so a flag and its argument share a
+    # line, with only the argument quoted when it needs to be.
     lines: list[str] = []
     if edge.provides:
         interface = any(m.is_interface for m in edge.provides)
         lines.append("/interface" if interface else "/internalPartition")
         for module in sorted(edge.provides, key=lambda m: m.logical):
-            lines.append("/ifcOutput")
-            lines.append(_rsp_quote(module.bmi))
+            lines.append(f"/ifcOutput {_rsp_quote(module.bmi)}")
     for module in modules:
-        lines.append("/reference")
-        lines.append(_rsp_quote(f"{module.logical}={module.bmi}"))
+        lines.append(f"/reference {_rsp_quote(f'{module.logical}={module.bmi}')}")
     return "".join(line + "\n" for line in lines)
 
 

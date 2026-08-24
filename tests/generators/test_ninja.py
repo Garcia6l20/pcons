@@ -1082,7 +1082,8 @@ class TestGeneratedSourcesOfALinkedDep:
 
     def test_the_link_still_waits_on_it(self, tmp_path, gcc_toolchain):
         lines = self._build(tmp_path, gcc_toolchain)
-        link_line = next(ln for ln in lines if ln.startswith("build app:"))
+        # "app" on POSIX, "app.exe" on Windows.
+        link_line = next(ln for ln in lines if ln.startswith("build app"))
 
         assert "gen.c" in link_line.split(" | ", 1)[1]
 
