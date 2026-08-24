@@ -204,7 +204,9 @@ class GccCxxCompiler(BaseTool):
             **base,
             "modobjcmd": modobjcmd,
             "modifacecmd": modifacecmd,
-            "modules": False,  # set True to enable C++20 module scanning
+            # None = auto (module-suffix sources opt the env in); True also
+            # scans module units in .cpp files; False disables scanning.
+            "modules": None,
         }
 
     def builders(self) -> dict[str, Builder]:

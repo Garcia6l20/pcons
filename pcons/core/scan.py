@@ -298,6 +298,7 @@ class ScanScope:
     collate_node: FileNode
     exports_node: FileNode
     governed: list[FileNode]
+    info_nodes: list[FileNode] = field(default_factory=list)
 
 
 def _rule_ident(name: str) -> str:
@@ -569,6 +570,7 @@ class ScannerResolver:
             collate_node=collate_node,
             exports_node=exports_node,
             governed=[g for g, _ in edges],
+            info_nodes=info_nodes,
         )
 
     # ------------------------------------------------------------------

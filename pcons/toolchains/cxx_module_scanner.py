@@ -585,6 +585,10 @@ def select_modules_scope(
         `.cpp`/`.cc` files (e.g. fmt's primary interface in `.cc`, or a
         target whose only module use is `import std;`).
 
+    `env.cxx.modules = False` disables scanning for the env outright — it
+    beats the suffix opt-in (with a warning, since a module interface then
+    compiles as plain C++). The default is None: auto.
+
     Returns:
         (cxx_module_pairs, cxx_pairs) restricted to qualifying envs. If
         no env qualifies, both lists are empty and the toolchain's
@@ -594,27 +598,44 @@ def select_modules_scope(
     cxx_pairs = source_obj_by_language.get("cxx", []) or []
 
     qualifying_env_ids: set[int] = set()
+    opted_out_env_ids: set[int] = set()
+
+    def _modules_setting(obj_node: Any) -> tuple[int | None, object]:
+        bi = getattr(obj_node, "_build_info", None)
+        env = bi.get("env") if bi else None
+        if env is None:
+            return None, None
+        cxx = getattr(env, "cxx", None)
+        return id(env), getattr(cxx, "modules", None) if cxx is not None else None
+
+    # Explicit settings first: True opts .cpp module units in; False wins
+    # over everything, including the suffix opt-in below.
+    for _, obj_node in list(cxx_module_pairs) + list(cxx_pairs):
+        env_id, setting = _modules_setting(obj_node)
+        if env_id is None:
+            continue
+        if setting is False:
+            opted_out_env_ids.add(env_id)
+        elif setting:
+            qualifying_env_ids.add(env_id)
 
     # Implicit opt-in: any env with an extension-tagged module source.
     for _, obj_node in cxx_module_pairs:
-        bi = getattr(obj_node, "_build_info", None)
-        if bi is None:
+        env_id, setting = _modules_setting(obj_node)
+        if env_id is None:
             continue
-        env = bi.get("env")
-        if env is not None:
-            qualifying_env_ids.add(id(env))
-
-    # Explicit opt-in: env.cxx.modules == True.
-    for _, obj_node in list(cxx_module_pairs) + list(cxx_pairs):
-        bi = getattr(obj_node, "_build_info", None)
-        if bi is None:
+        if env_id in opted_out_env_ids:
+            # An explicit False beats the suffix opt-in — but a module
+            # interface that will consequently compile as plain C++ is
+            # almost never what anyone wants, so say so.
+            logger.warning(
+                "env.cxx.modules is False, but %s is a module interface "
+                "unit; it will compile without module semantics. Remove "
+                "the setting to scan this environment.",
+                getattr(obj_node, "path", obj_node),
+            )
             continue
-        env = bi.get("env")
-        if env is None:
-            continue
-        cxx = getattr(env, "cxx", None)
-        if cxx is not None and bool(getattr(cxx, "modules", False)):
-            qualifying_env_ids.add(id(env))
+        qualifying_env_ids.add(env_id)
 
     def _belongs(obj_node: Any) -> bool:
         bi = getattr(obj_node, "_build_info", None)

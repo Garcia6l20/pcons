@@ -236,7 +236,9 @@ class ClangCxxCompiler(BaseTool):
             **base,
             "modobjcmd": modobjcmd,
             "moddir": "cxx_modules",
-            "modules": False,  # set True to enable C++20 module scanning
+            # None = auto (module-suffix sources opt the env in); True also
+            # scans module units in .cpp files; False disables scanning.
+            "modules": None,
             "scan_deps": "",  # override the clang-scan-deps executable
         }
 

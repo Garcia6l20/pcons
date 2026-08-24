@@ -505,32 +505,33 @@ class TestFinishModulePassScanEdge:
 class _FakeCxxNamespace:
     """Stand-in for env.cxx with just the `modules` attribute the helper reads."""
 
-    def __init__(self, modules: bool) -> None:
+    def __init__(self, modules: bool | None) -> None:
         self.modules = modules
 
 
 class _FakeEnv:
-    def __init__(self, modules: bool) -> None:
+    def __init__(self, modules: bool | None) -> None:
         self.cxx = _FakeCxxNamespace(modules)
 
 
 class _FakeObj:
     """Stand-in FileNode-ish duck-type for select_modules_scope."""
 
-    def __init__(self, env: _FakeEnv) -> None:
+    def __init__(self, env: _FakeEnv, path: str = "/src/some.cpp") -> None:
         self._build_info = {"env": env}
+        self.path = Path(path)
 
 
 class TestSelectModulesScope:
     def test_no_module_extensions_no_optin_skips(self) -> None:
-        env = _FakeEnv(modules=False)
+        env = _FakeEnv(modules=None)
         obj = _FakeObj(env)
         # cxx_pairs only — no .cppm/.ixx, env didn't opt in.
         scope = select_modules_scope({"cxx": [(Path("/src/main.cpp"), obj)]})
         assert scope == ([], [])
 
     def test_extension_implicit_optin_includes_cxx_pairs(self) -> None:
-        env = _FakeEnv(modules=False)
+        env = _FakeEnv(modules=None)
         mod_obj = _FakeObj(env)
         cxx_obj = _FakeObj(env)
         # The .cppm in this env qualifies; sibling .cpp files in the same
@@ -543,6 +544,16 @@ class TestSelectModulesScope:
         )
         assert len(m_pairs) == 1
         assert len(c_pairs) == 1
+
+    def test_explicit_false_vetoes_the_suffix_optin(self) -> None:
+        """env.cxx.modules = False beats the .cppm opt-in (with a warning);
+        before the tri-state default it was a silent no-op."""
+        env = _FakeEnv(modules=False)
+        mod_obj = _FakeObj(env, "/src/MyMod.cppm")
+        m_pairs, c_pairs = select_modules_scope(
+            {"cxx_module": [(Path("/src/MyMod.cppm"), mod_obj)]}
+        )
+        assert (m_pairs, c_pairs) == ([], [])
 
     def test_explicit_optin_without_extensions(self) -> None:
         env = _FakeEnv(modules=True)
