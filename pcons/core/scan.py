@@ -331,6 +331,11 @@ class ScannerResolver:
         # File-identifier collision guard: two qualified names must never
         # sanitize to the same scope id (their manifests would collide).
         self._scope_ids: dict[tuple[str, str], str] = {}
+        # Edge-ownership registry: the resolver's object cache can put one
+        # build node in several targets' intermediate_nodes, and an edge
+        # takes exactly one dyndep file — so the first scope to claim a node
+        # owns it, and later scopes import the owner's exports instead.
+        self._claimed: dict[tuple[str, int], ScanScope] = {}
 
     def run(self, targets_in_build_order: Sequence[Target]) -> None:
         for target in targets_in_build_order:
@@ -379,6 +384,33 @@ class ScannerResolver:
                 f"attach."
             )
 
+        # An edge another scope already governs (a source shared between
+        # targets, deduplicated to one object node) stays with its owner;
+        # this scope imports the owner's exports so the shared artifacts
+        # still resolve here.
+        owner_scopes: list[ScanScope] = []
+        own_edges: list[tuple[FileNode, list[FileNode]]] = []
+        for governed, scanned in edges:
+            owner = self._claimed.get((scanner.name, id(governed)))
+            if owner is None:
+                own_edges.append((governed, scanned))
+            elif owner.scanner == scanner:
+                if owner not in owner_scopes:
+                    owner_scopes.append(owner)
+            else:
+                raise PconsError(
+                    f"Build edge for {governed.path} is claimed by scanner "
+                    f"'{scanner.name}' of scope "
+                    f"'{owner.target.qualified_name}' with a different "
+                    f"declaration. One edge takes one scanner."
+                )
+        edges = own_edges
+        if not edges:
+            # Every governed edge belongs to another scope; there is nothing
+            # of this target's own to scan, and its shared objects are
+            # already ordered by their owners' dyndep files.
+            return
+
         scope_id = self._scope_id(scanner, target)
         rel = project._path_resolver.make_execution_relative
         base_rel = f"scan/{scanner.name}"
@@ -405,12 +437,16 @@ class ScannerResolver:
                 self._manifest_edge(scanner, env, governed, scanned, info_node, rel)
             )
 
-        # --- imports: exports of scanned dependency scopes --------------
+        # --- imports: exports of scanned dependency scopes, plus the
+        # owners of any shared edges ------------------------------------
         import_scopes = [
             scope
             for dep in target.transitive_dependencies()
             if (scope := project._scan_scopes.get((scanner.name, dep.qualified_name)))
         ]
+        for owner in owner_scopes:
+            if owner not in import_scopes:
+                import_scopes.append(owner)
 
         # --- manifest (configure-written; static facts only) -------------
         # Imported here, not at module level: `python -m pcons.core.collate`
@@ -561,7 +597,7 @@ class ScannerResolver:
                         bi["extra_command_flags"] = extra
                     extra.append(scanner.edge_args.token)
 
-        project._scan_scopes[key] = ScanScope(
+        scope_record = ScanScope(
             scanner=scanner,
             target=target,
             manifest_rel=manifest_rel,
@@ -572,6 +608,9 @@ class ScannerResolver:
             governed=[g for g, _ in edges],
             info_nodes=info_nodes,
         )
+        project._scan_scopes[key] = scope_record
+        for governed, _ in edges:
+            self._claimed[(scanner.name, id(governed))] = scope_record
 
     # ------------------------------------------------------------------
     # Helpers

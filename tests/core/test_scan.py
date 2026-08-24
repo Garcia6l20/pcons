@@ -547,6 +547,89 @@ class TestEdgeArgs:
         }
 
 
+class TestSharedEdgeOwnership:
+    """One build node in two targets (the resolver's object cache does this
+    for identical compiles): the first scope owns the edge, the second
+    imports the owner's exports instead of governing it again."""
+
+    def _two_targets_sharing_a_node(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from pcons.core.scan import ScannerResolver
+
+        project = make_project(tmp_path, monkeypatch)
+        env = SimpleNamespace(register_node=lambda _n: None)
+
+        shared_src = FileNode(tmp_path / "shared.scene")
+        shared = FileNode("build/obj.shared/shared.pack")
+        shared._build_info = {"env": env, "sources": [shared_src]}
+
+        def make_target(name, extra_src):
+            from pcons.core.target import Target
+
+            src = FileNode(tmp_path / extra_src)
+            own = FileNode(f"build/obj.{name}/{extra_src}.pack")
+            own._build_info = {"env": env, "sources": [src]}
+            target = Target(name, target_type="program", project=project)
+            target._env = env  # type: ignore[assignment]
+            target.intermediate_nodes.extend([shared, own])
+            project._targets.append(target)
+            return target
+
+        a = make_target("a", "a.scene")
+        b = make_target("b", "b.scene")
+        scanner = make_scanner()
+        scanner.attach(a, b)
+        ScannerResolver(project).run(project.targets)
+        return project, a, b, shared
+
+    def test_first_scope_owns_the_shared_edge(self, tmp_path, monkeypatch):
+        project, a, b, shared = self._two_targets_sharing_a_node(tmp_path, monkeypatch)
+
+        scope_a = project._scan_scopes[("scene-refs", "t::a")]
+        scope_b = project._scan_scopes[("scene-refs", "t::b")]
+        assert shared in scope_a.governed
+        assert shared not in scope_b.governed
+        # One dyndep file per edge: the shared node keeps the owner's.
+        assert shared._build_info["dyndep"] == scope_a.dyndep_rel
+
+    def test_second_scope_imports_the_owner(self, tmp_path, monkeypatch):
+        import json
+
+        project, a, b, shared = self._two_targets_sharing_a_node(tmp_path, monkeypatch)
+
+        manifest = json.loads(
+            (tmp_path / "build/scan/scene-refs/t.b.manifest.json").read_text()
+        )
+        assert "scan/scene-refs/t.a.exports.json" in manifest["imports"]
+
+    def test_a_target_with_only_shared_edges_gets_no_scope(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from pcons.core.scan import ScannerResolver
+        from pcons.core.target import Target
+
+        project = make_project(tmp_path, monkeypatch)
+        env = SimpleNamespace(register_node=lambda _n: None)
+        shared_src = FileNode(tmp_path / "shared.scene")
+        shared = FileNode("build/obj.shared/shared.pack")
+        shared._build_info = {"env": env, "sources": [shared_src]}
+        targets = []
+        for name in ("a", "b"):
+            t = Target(name, target_type="program", project=project)
+            t._env = env  # type: ignore[assignment]
+            t.intermediate_nodes.append(shared)
+            project._targets.append(t)
+            targets.append(t)
+        scanner = make_scanner()
+        scanner.attach(*targets)
+
+        ScannerResolver(project).run(project.targets)
+
+        assert ("scene-refs", "t::a") in project._scan_scopes
+        assert ("scene-refs", "t::b") not in project._scan_scopes
+
+
 class TestScannerErrors:
     """Misuse is caught at configure time, with an actionable message."""
 
