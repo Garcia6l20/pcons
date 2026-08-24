@@ -1187,6 +1187,8 @@ class Environment(_EnvironmentStubs):
         cwd: str | Path | None = None,
         launcher: Sequence[str] | None = None,
         worker: Any = None,
+        depfile: str | None = None,
+        deps_style: str | None = None,
     ) -> Target:
         """Run an arbitrary shell command to build targets from sources.
 
@@ -1285,6 +1287,18 @@ class Environment(_EnvironmentStubs):
                    Renders to a launcher, so the generated build file still
                    builds standalone: with no worker listening, the command
                    runs directly. See :mod:`pcons.workers`.
+            depfile: Suffix of the make-style dependency file the command
+                   writes, appended to the output: ".d" promises the command
+                   writes its discovered dependencies to ``<target>.d``.
+                   Whatever that file lists is rebuilt against, so a
+                   generator that reads includes or imports keeps working
+                   after an input it wasn't told about changes. Only for a
+                   command with a single target, since the file is named
+                   after the output.
+            deps_style: How those dependencies arrive: "gcc" (the default),
+                   the make-style depfile above, or "msvc", MSVC
+                   ``/showIncludes`` lines on stdout. Only meaningful
+                   alongside ``depfile``.
 
         Returns:
             Target object representing the command outputs.
@@ -1331,8 +1345,33 @@ class Environment(_EnvironmentStubs):
             project.Install("dist/", [generated])
         """
         from pcons.core.builder import GenericCommandBuilder
+        from pcons.core.errors import PconsError
         from pcons.core.node import FileNode
         from pcons.core.target import Target as TargetClass
+
+        if depfile is not None and not depfile.startswith("."):
+            raise PconsError(
+                f"depfile={depfile!r}: a depfile is named by the suffix "
+                f'appended to the command\'s output, so it starts with a "." '
+                f'— ".d" for a command writing "<target>.d".',
+                location=get_caller_location(),
+            )
+        if deps_style is not None and deps_style not in ("gcc", "msvc"):
+            raise PconsError(
+                f'deps_style={deps_style!r}: expected "gcc" (a make-style '
+                f'depfile) or "msvc" (/showIncludes output).',
+                location=get_caller_location(),
+            )
+        if depfile is None:
+            if deps_style is not None:
+                raise PconsError(
+                    f"deps_style={deps_style!r} needs depfile= as well: it "
+                    f"says how the dependencies the command writes arrive, "
+                    f"and without a depfile it writes none.",
+                    location=get_caller_location(),
+                )
+        elif deps_style is None:
+            deps_style = "gcc"
 
         # The builder anchors these; the name only needs the file's stem,
         # which the prefix doesn't change.
@@ -1375,6 +1414,8 @@ class Environment(_EnvironmentStubs):
             restat=restat or write_if_different,
             cwd=self._resolve_cwd(cwd),
             launcher=launcher,
+            depfile=depfile,
+            deps_style=deps_style,
         )
 
         # Nodes up front, so the declared order below can splice Targets back

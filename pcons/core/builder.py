@@ -876,6 +876,8 @@ class GenericCommandBuilder(BaseBuilder):
         restat: bool = False,
         cwd: Path | None = None,
         launcher: Sequence[str] | None = None,
+        depfile: str | None = None,
+        deps_style: str | None = None,
     ) -> None:
         """Initialize a generic command builder.
 
@@ -898,6 +900,12 @@ class GenericCommandBuilder(BaseBuilder):
             launcher: Program to run this command behind, as tokens. Applies
                 to this edge alone, after any launcher on the ``command``
                 tool; see :mod:`pcons.core.launcher`.
+            depfile: Suffix of the make-style dependency file the command
+                writes beside its output (".d" means "<target>.d"), or None.
+                Only one target may be produced, since the generator names
+                the depfile after the output.
+            deps_style: How the dependencies arrive: "gcc" (a depfile) or
+                "msvc" (/showIncludes on stdout).
         """
         super().__init__(
             name="Command",
@@ -913,6 +921,8 @@ class GenericCommandBuilder(BaseBuilder):
         self._restat = restat
         self._cwd = cwd
         self._launcher = list(launcher) if launcher else []
+        self._depfile = depfile
+        self._deps_style = deps_style
 
     def _tokenize_command(self, command: str | list[str]) -> list:
         """Convert command string to tokenized list with typed markers.
@@ -1010,6 +1020,17 @@ class GenericCommandBuilder(BaseBuilder):
         defined_at = kwargs.get("defined_at") or get_caller_location()
         project = getattr(env, "_project", None)
 
+        if self._depfile is not None and len(targets) > 1:
+            from pcons.core.errors import PconsError
+
+            raise PconsError(
+                f"depfile={self._depfile!r}: the depfile is named after the "
+                f"command's output, so a command writing one may have only "
+                f"one target; this one has {len(targets)}. Split it into one "
+                f"command per output.",
+                location=defined_at,
+            )
+
         result: list[FileNode] = []
         for target in targets:
             node = (
@@ -1030,6 +1051,13 @@ class GenericCommandBuilder(BaseBuilder):
         # Build info lives on the first (primary) target
         if result:
             primary = result[0]
+            depfile: PathToken | None = None
+            if self._depfile is not None:
+                depfile = PathToken(
+                    path=str(primary.path),
+                    path_type="build",
+                    suffix=self._depfile,
+                )
             primary._build_info = {
                 "tool": "command",
                 "command_var": "cmdline",
@@ -1039,8 +1067,8 @@ class GenericCommandBuilder(BaseBuilder):
                 "language": None,
                 "sources": sources,
                 "all_targets": result,
-                "depfile": None,
-                "deps_style": None,
+                "depfile": depfile,
+                "deps_style": self._deps_style,
                 "restat": self._restat,
                 "cwd": self._cwd,
             }

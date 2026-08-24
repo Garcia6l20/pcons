@@ -82,6 +82,8 @@ if TYPE_CHECKING:
             cwd: str | Path | None = None,
             launcher: Sequence[str] | None = None,
             worker: Any = None,
+            depfile: str | None = None,
+            deps_style: str | None = None,
         ) -> Target:
             """Create a custom command target."""
             ...

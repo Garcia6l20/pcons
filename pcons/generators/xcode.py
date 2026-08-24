@@ -90,6 +90,7 @@ class XcodeGenerator(BaseGenerator):
 
     def _generate_impl(self, project: Project, output_dir: Path) -> None:
         """Generate the .xcodeproj bundle in output_dir."""
+        self._reject_dyndep(project)
 
         output_dir.mkdir(parents=True, exist_ok=True)
 

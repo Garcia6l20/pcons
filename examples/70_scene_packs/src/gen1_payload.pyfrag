@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Payload fragment of the stage-1 generator: the scene it writes, and the
+# source text of the stage-2 generator's payload fragment.
+
+write(
+    0,
+    """name generated1
+ref common
+prop skybox aurora
+""",
+)
+
+write(
+    1,
+    '''# SPDX-License-Identifier: MIT
+# Payload fragment of the stage-2 generator, written by the stage-1 generator
+# and concatenated onto the same head to make genscene2.
+
+write(
+    0,
+    """name generated2
+ref level1
+prop lights 7
+""",
+)
+''',
+)

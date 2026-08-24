@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Tests for pcons.generators.makefile."""
 
+import pytest
+
 from pcons.core.builder import CommandBuilder
+from pcons.core.errors import PconsError
 from pcons.core.node import FileNode
 from pcons.core.project import Project
 from pcons.core.target import Target
@@ -680,3 +683,44 @@ class TestPathsWithSpaces:
 
     def test_a_path_without_spaces_is_untouched(self) -> None:
         assert MakefileGenerator()._escape_path("obj/plain.o") == "obj/plain.o"
+
+
+class TestMakefileDyndep:
+    """make cannot express dependencies discovered during the build."""
+
+    def _project_using_dyndep(self, tmp_path):
+        project = Project("test", root_dir=tmp_path, build_dir=tmp_path / "build")
+
+        target = Target("app")
+        output_node = FileNode(tmp_path / "build" / "obj" / "main.o")
+        source_node = FileNode(tmp_path / "src" / "main.cpp")
+        output_node._build_info = {
+            "tool": "cxx",
+            "command_var": "cmdline",
+            "sources": [source_node],
+            "dyndep": "cxx_modules.dyndep",
+        }
+        output_node.builder = CommandBuilder(
+            "Object", "cxx", "cmdline", src_suffixes=[".cpp"], target_suffixes=[".o"]
+        )
+        target.intermediate_nodes.append(output_node)
+        return project
+
+    def test_dyndep_is_refused(self, tmp_path):
+        project = self._project_using_dyndep(tmp_path)
+
+        gen = MakefileGenerator()
+        gen.generate(project)
+
+        with pytest.raises(PconsError, match="ninja"):
+            BaseGenerator._generate_pending(project)
+
+    def test_nothing_is_written_before_the_refusal(self, tmp_path):
+        project = self._project_using_dyndep(tmp_path)
+
+        gen = MakefileGenerator()
+        gen.generate(project)
+
+        with pytest.raises(PconsError):
+            BaseGenerator._generate_pending(project)
+        assert not (tmp_path / "build" / "Makefile").exists()

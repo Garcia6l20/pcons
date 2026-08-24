@@ -81,6 +81,11 @@ class BuildInfo(TypedDict, total=False):
     # These are written as Ninja build-level variables
     variables: dict[str, str]
 
+    # Per-edge values referenced from the command template via NodeVar
+    # markers (see pcons.core.subst.NodeVar): written as build-level ninja
+    # variables so edges with differing values still share one rule.
+    vars: dict[str, str]
+
     # Ninja dyndep file path (relative to build dir) for build statements
     # whose dynamic dependencies live in an external dyndep file. Used by
     # the C++ module and Fortran module scanners.

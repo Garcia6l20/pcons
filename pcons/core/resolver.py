@@ -223,6 +223,14 @@ class Resolver:
                             source_obj_by_language,
                         )
 
+        # Wire attached scanners (discovered dependencies): per-edge scan
+        # nodes, per-target collate nodes, dyndep stamping. After the
+        # toolchain hooks (which may attach scanners) and before command
+        # expansion (so per-edge vars exist when templates expand).
+        from pcons.core.scan import ScannerResolver
+
+        ScannerResolver(self.project).run(self._targets_in_build_order())
+
         # Expand command templates for all nodes
         trace("resolve", "Starting command expansion")
         self._expand_node_commands()

@@ -467,6 +467,8 @@ class Target:
         # Per-source environment overrides (add_sources(..., env=...)),
         # keyed by source node path.
         "_source_envs",
+        # Scanners attached via Scanner.attach() (pcons/core/scan.py).
+        "_scanners",
         # Membership index for _sources, so duplicate detection stays O(1)
         # on targets with thousands of sources.
         "_source_set",
@@ -531,6 +533,9 @@ class Target:
         # Sources that compile with an environment other than the target's
         # (add_sources(..., env=...)), keyed by source node path.
         self._source_envs: dict[Path, Environment] = {}
+        # Scanners attached via Scanner.attach(target); wired by the
+        # resolver's ScannerResolver pass (see pcons/core/scan.py).
+        self._scanners: list[Any] = []
 
         if project is None:
             from pcons.core.project import Project

@@ -49,6 +49,8 @@ class MakefileGenerator(BaseGenerator):
 
     def _generate_impl(self, project: Project, output_dir: Path) -> None:
         """Generate Makefile in output_dir."""
+        self._reject_dyndep(project)
+
         output_dir.mkdir(parents=True, exist_ok=True)
         makefile_path = output_dir / "Makefile"
 
