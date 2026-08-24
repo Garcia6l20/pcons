@@ -264,6 +264,30 @@ class TestScanEdge:
         assert node_paths(scan_node.explicit_deps) == ["a.scene"]
         assert node_paths(scan_node._build_info["sources"]) == ["a.scene"]
 
+    def test_scan_inherits_the_governed_edges_ordering_deps(
+        self, tmp_path, monkeypatch
+    ):
+        """A scan reads what the governed command reads, so a generated
+        header the compile waits for must exist before the scan too --
+        review finding: the scan raced the generator on clean builds."""
+        project = make_project(tmp_path, monkeypatch)
+        env = project.Environment()
+        (tmp_path / "gen.py").write_text("# generator stub\n")
+        gen = env.Command(
+            target="gen.h",
+            source="gen.py",
+            command="python $SOURCE $TARGET",
+            name="gen_h",
+        )
+        a = pack(env, "a")
+        a.depends(gen)
+        make_scanner().attach(a)
+        project.resolve()
+
+        scan_node = project.node(Path("build/packs/a.pack.scaninfo.json"))
+        deps = node_paths(scan_node.order_only_deps)
+        assert "build/gen.h" in deps
+
 
 class TestCollateEdge:
     """One collate edge per scanned target."""

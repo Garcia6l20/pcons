@@ -673,6 +673,19 @@ class ScannerResolver:
         info_node.add_inputs(scanned)
         if scanner.scan_deps:
             info_node.depends([project.node(d) for d in scanner.scan_deps])
+        # The scan reads what the governed command reads (a module scanner
+        # runs a real compiler front end), so anything the governed edge
+        # waits for — a generated header from target.depends(), a linked
+        # dependency's generated outputs — must exist before the scan too.
+        # Order-only: the scan's own depfile records what was actually read
+        # and carries change propagation from there.
+        inherited = [
+            dep
+            for dep in (*governed.implicit_deps, *governed.order_only_deps)
+            if isinstance(dep, FileNode)
+        ]
+        if inherited:
+            info_node.order_after(inherited)
 
         tokens = [_tokenize_one(t) for t in scanner.scan_command]
         info_node._build_info = {
