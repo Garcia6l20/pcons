@@ -423,8 +423,7 @@ app.link(mod)
 
 When a target has at least one source whose extension is in
 `{.cppm, .ixx, .cxxm, .c++m}`, pcons attaches a
-[scanner](scanners.md) to it. Nothing is scanned at configure time.
-Instead each translation unit gets its own scan edge
+[scanner](scanners.md) to it. Each translation unit gets its own build-time scan edge
 (`clang-scan-deps`, `cl /scanDependencies`, or GCC's own preprocess-only
 pass, all emitting P1689R5), and each target gets one collate edge that
 turns those reports into the target's Ninja `dyndep` file and writes each
@@ -435,16 +434,12 @@ Partition units that live in `.cpp` files (interface partitions like
 `export module M:P;` or internal partitions like `module M:P;`) are
 recognized there, from the scan.
 
-Two consequences worth knowing:
-
-- **Sources aren't configure dependencies.** Adding an `import` to one
-  file rescans and recompiles that file. pcons doesn't re-run, and the
-  neighboring translation units are left alone.
-- **A cross-target import needs the target dependency.** A scope resolves
-  a module name against its own units and against the exports of the
-  targets it depends on, so `app` must `link()` (or `add_dependency()`)
-  the target that compiles the interface. The dependency carries the
-  exports; the content decides the compile order.
+!!! note
+    - **A cross-target import needs the target dependency.** A scope resolves
+      a module name against its own units and against the exports of the
+      targets it depends on, so `app` must `link()` (or `add_dependency()`)
+      the target that compiles the interface. The dependency carries the
+      exports; the content decides the compile order.
 
 Scanned builds use `dyndep`, so they need ninja ≥ 1.11 — pcons writes
 that floor into `build.ninja` — and only the ninja generator can express

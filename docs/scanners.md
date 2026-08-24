@@ -1,36 +1,40 @@
 # Discovered Dependencies: Scanners
 
-Some edges' real dependencies live inside their inputs. `import m;` orders one
-compile after another. A scene file that references another scene has to be
-packed after it. A Fortran `USE` picks a `.mod` some other compile writes. The
-build script says none of it, and the filesystem can't be asked at configure
-time either: half those files don't exist yet.
+Some edges' real dependencies live only inside their input files. In
+C++, `import m;` orders one compile after another. A scene file that
+references another scene has to be packed after the second scene is
+made up-to-date. A Fortran `USE` picks a `.mod` some other compile
+writes. And sometimes those source files are _generated_, so they
+don't exist when the build starts, and may be updated as they're
+rebuilt in an incremental build. Users shouldn't have to hand-create
+these dependencies in their build scripts.
 
 A **Scanner** declares that a set of build edges has content-derived
-dependencies, and gives the command that finds them. You supply a tool that
-reads one edge's sources and reports what it found; pcons wires the graph and
-turns those reports into a Ninja
-[dyndep](https://ninja-build.org/manual.html#_dyndep) file while the build
-runs.
+dependencies, and allows users to specify the command that finds them.
+A scanner supplies a tool that reads one edge's sources and reports
+what it found; pcons wires the graph and turns those reports into a
+Ninja [dyndep](https://ninja-build.org/manual.html#_dyndep) file while
+the build runs.
 
-## The invariant
+## Static vs. Dynamic content
 
-> Configure may depend only on static facts: file names, suffixes, flags, the
-> target DAG. Content-derived facts flow through scan → collate at build time.
-
-Everything else here follows from that:
+> Configure may depend only on static facts: file names, suffixes,
+> flags, the target DAG. Content-derived facts, which may or may not
+> exist or be up-to-date when the build starts, flow through scan →
+> collate at build time.
 
 - A scanned source is never read at configure time, so a *generated* source is
-  ordinary. The scan edge takes it as an input, and ninja runs the producer
+  treated like other sources. The scan edge takes it as an input, and ninja runs the producer
   first.
 - Scanned sources aren't configure dependencies. Change an `import` and pcons
-  doesn't re-run: that one file is rescanned and recompiled, and its
-  neighbors are left alone.
-- Discovered facts can't reach a command line through dyndep, which carries
-  only deps and outputs. They travel instead in a file collate writes, at a
-  path fixed at configure time. See [Discovered flags](#discovered-flags).
+  doesn't need to re-run: that one file is rescanned and recompiled directly by ninja.
+- Some discovered dependencies can't reach a command line directly through dyndep, which carries
+  only deps and outputs. Those get written to a file by the new `collate` step, to a
+  fixed path. See [Discovered flags](#discovered-flags).
 
-## Declaring one
+## Declaring a Scanner
+
+Here's a simple example using "scene" files, which for this example are text files with name-value pairs like name and properties, and `ref`s which refer to other scenes by name. The `scan_scene.py` tool collects provides/requires for each scene based on its `name` and `refs`. That allows pcons to dynamically build a dependency graph for the whole hierarchy. This even works for scenes that are generated during the build, as shown in example 70 (`examples/70_scene_packs`).
 
 ```python
 from pcons import Scanner
@@ -45,32 +49,32 @@ scene_refs = Scanner(
 scene_refs.attach(pack_common, pack_level1, pack_level2)
 ```
 
-`attach()` is the only surface, and it takes targets, not files. Each attached
+`attach()` is the only API for a Scanner, and it takes targets (not files). Each attached
 target is one **scope**. Call it before `project.resolve()`; a toolchain may
 also attach from its `after_resolve` hook.
 
 A **governed edge** is any build edge of an attached target with at least one
 source matching `source_suffixes`. Attaching a scanner that governs nothing is
-an error, not a no-op.
+an error.
 
 Per scope, the resolver wires:
 
 - **one scan edge per governed edge**: that edge's scanned sources in, one
   scan-info JSON file out. All the scan edges of a scanner share one ninja
   rule, whatever their count.
-- **one collate edge per target**: the scan infos, a manifest pcons wrote at
-  configure, and the exports of scanned dependency scopes in; a dyndep file,
-  an exports file, and any args files out. It runs with `restat`, so a collate
+- **one collate edge per target**: inputs are the scan infos, a fixed manifest pcons writes at
+  configure time, and the exports of scanned dependency scopes. Outputs are a dyndep file,
+  an exports file, and any args files. It runs with `restat`, so a collate
   that changes nothing dirties nothing.
 - **`dyndep = <the scope's dyndep file>` on every governed edge**, with that
   file in *order-only* position. The edge waits for it to exist; the loaded
   dyndep supplies the real deps. Rewriting it doesn't by itself rebuild
   anything.
 
-`scan_depfile` / `scan_deps_style` give the scan edge its own dependency
-tracking, so a scan that read a header re-runs when the header changes:
-`"gcc"` for a make-style depfile, `"msvc"` for `/showIncludes` on the scan's
-output.
+`scan_depfile` / `scan_deps_style` give the scan edge its own
+dependency tracking, so a scan that reads a header re-runs when the
+header changes. Styles are `"gcc"` for a make-style depfile, `"msvc"`
+for `/showIncludes` on the scan's output.
 
 ## The scan-info contract
 
@@ -100,8 +104,7 @@ All paths are relative to the build directory, with forward slashes.
 
 Hence the rule collate enforces: **every provide path must be backed by one
 of the edge's declared outputs or by one of its `extra_outputs`.** Anything
-else is rejected. A dyndep output that nothing actually writes is never
-newer than its inputs, so ninja rebuilds that edge on every build, forever.
+else is rejected.
 
 ## Exports travel along dependencies
 
@@ -116,10 +119,10 @@ to look. What gets used, and in what order, comes out of the scan.
 
 ## Discovered flags
 
-Dyndep can reorder a build; it can't edit a command. `edge_args` closes that
-gap. Collate writes each governed edge a small file listing the artifacts its
-requires resolved to, and the edge's command refers to that file by a path
-fixed at configure time:
+In Ninja, dyndep can reorder a build; it can't edit a command. Pcons uses `edge_args` to
+close that gap. Collate writes with each governed edge a small file listing the artifacts its
+`requires` resolved to, and the edge's command refers to that file by a path
+fixed at configure time, and typically used in the compilation line as `@file`.
 
 ```python
 edge_args=EdgeArgsSpec(
@@ -130,9 +133,6 @@ edge_args=EdgeArgsSpec(
     include="requires",              # or "requires+provides"
 )
 ```
-
-The path is static, the content is not — which is exactly what dyndep can't
-do. `tools/pack_scene.py` never parses a scene for references: it's told.
 
 `link_args` is the same idea per scope instead of per edge, wired to the
 target's final link edges. It carries extra link inputs that only collate can
@@ -174,17 +174,17 @@ and `examples/57_staged_generation`.
 
 ## Ninja only
 
-Only ninja can express dyndep. The Makefile and Xcode generators refuse a
-project that uses a scanner, with a clear error, rather than writing build
-files that would be quietly wrong. `build.ninja` declares
-`ninja_required_version = 1.11` as soon as a scope exists: that's where
-cross-file dyndep references resolve reliably.
+Only ninja can express dyndep. The Makefile and Xcode generators
+refuse a project that uses a scanner. `build.ninja` declares
+`ninja_required_version = 1.11` as soon as a scope exists: that's the
+minimum version where cross-file dyndep references resolve reliably.
 
 ## A complete example
 
-Scenes reference each other by name. Packing one embeds a digest of every pack
-it references, so a referenced pack must be built first — and which one that
-is lives in the scene text.
+Scenes reference each other by name. For this contrived example,
+"packing" one embeds a digest of every pack it references, so a
+referenced pack must be built first — and which one that is lives in
+the scene text.
 
 ```python
 def pack(name: str, *scenes: str) -> Target:
@@ -215,8 +215,7 @@ scene_refs = Scanner(
 scene_refs.attach(pack_common, pack_level1)
 ```
 
-The scan tool is a dozen lines: read the scenes, emit the schema. The provides
-carry no path, so `provide_template` supplies one.
+The `provides` carry no path, so `provide_template` supplies one.
 
 ```python
 info = {
@@ -236,14 +235,13 @@ build packs/level1.pack: dyndep | packs/common.pack
 ```
 
 The full version is `examples/70_scene_packs`: several scenes per pack (so the
-scan edge is told its pack through `scan_vars` instead of a template), the
+scan edge gets its pack through `scan_vars` instead of a template), the
 generated scenes, and the rebuild behavior.
 
 ## How the C++ and Fortran toolchains use it
 
-Nothing below is something you call — it's what a `Scanner` looks like when a
-toolchain declares one, and it's why C++20 modules and Fortran modules work
-the way they do.
+C++20 modules and Fortran modules use this method internally, so it should be fully
+transparent for users.
 
 Every target that owns module sources gets a scanner attached automatically.
 For C++ the scan edge is `clang-scan-deps`, `cl /scanDependencies`, or GCC's

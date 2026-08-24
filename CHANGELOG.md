@@ -7,19 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release adds a significant new feature: Scanners. These operate
+at runtime, largely replacing the configure-time scans we were using
+for C++ and Fortran modules. Those scans were good up to a point, but
+there are real-world cases they could not express. Runtime scanners
+allow fully dynamic fine-grain multi-phase builds including generated
+source files, with proper dependency management throughout. Most of
+this now requires the Ninja back-end because Makefiles don't have the
+machinery to support this kind of dynamic dependencies.
+
 ### Added
 
-- **Scanners: discovered dependencies, for any tool.** A `Scanner` declares
-  that some edges' real dependencies — and their extra outputs, and even
-  parts of their command lines — come from their inputs' *content*. You give
-  the command that scans one edge's sources and reports what it found; pcons
+- **Scanners: runtime-discovered dependencies.** A `Scanner` declares
+  that some edges' real dependencies, their extra outputs, and even
+  parts of their command lines, come from their inputs' *content*. Users can now give
+  a command that scans one edge's sources and reports what it found; pcons
   wires a scan edge per governed edge, one collate edge per target, and the
   ninja `dyndep` file that reorders the build. Discovered flags reach a
   command line through a per-edge args file collate writes at a path fixed at
-  configure time. Nothing about it is C++-specific:
-  `examples/70_scene_packs` packs scene files that reference each other by
-  name, across two generations of *generated* scenes, with no staging and no
-  compiler in sight. See `docs/scanners.md`.
+  configure time. Not C++-specific: there's an example at  `examples/70_scene_packs` 
+  that packs "scene" files that reference each other by  name. New doc at `docs/scanners.md`.
 
 - **`env.Command` takes `depfile=` and `deps_style=`.** A custom command can
   now report the files it turned out to read, the way a compiler does:
@@ -55,17 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing extra, and a toolchain with no std module is only an error when
   something actually imports it.
 
-- **Module names resolve through declared dependencies.** A target sees the
-  modules exported by the targets it links or depends on, not by anything
-  anywhere in the build. A cross-target Fortran `USE` without a `link()` or
-  `add_dependency()` no longer orders the build: the dependency carries the
-  exports, the content decides the order.
+  **Module names resolve through declared dependencies.** A target
+  sees the modules exported by the targets it links or depends on. A
+  cross-target Fortran `USE` without a `link()` or `add_dependency()`
+  no longer orders the build: the dependency carries the exports, the
+  content decides the order.
 
 - **Fortran module scanning moved onto the same primitive**, gaining per-file
   scans, generated-source support, and `restat` — and `--moddir` now follows
   `env.fc.moddir` instead of a hardcoded path.
 
-- **`env.cxx.modules` is a tri-state.** `None` (the default) is auto: an
+- **`env.cxx.modules` is now tri-state.** `None` (the default) is auto: an
   extension-tagged module source opts its environment in. `True` also scans
   module units written in `.cpp`/`.cc`. `False` disables scanning for the
   environment, and warns if a module interface would then compile as plain
@@ -104,13 +111,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists before any compile runs, and the depfile decides which sources
   actually included it. (#104)
 
-- **A static library's compiles now wait for a dependency's generated
-  headers.** Only programs and shared libraries ordered their compiles after
-  the non-link outputs of a linked dependency, so a `StaticLibrary` or
-  `ObjectLibrary` whose sources included a generated header could compile
-  before the header existed — a race that a parallel build lost at random.
-  Ordering a compile is a property of compiling, not of linking, and now
-  applies to every target type.
+  **A static library's compiles now wait for a dependency's generated
+  headers.** Only programs and shared libraries ordered their compiles
+  after the non-link outputs of a linked dependency, so a
+  `StaticLibrary` or `ObjectLibrary` whose sources included a
+  generated header could compile before the header existed. Ordering a
+  compile is a property of compiling, not of linking, and now applies
+  to every target type.
 
 ## [0.28.0] - 2026-08-23
 
