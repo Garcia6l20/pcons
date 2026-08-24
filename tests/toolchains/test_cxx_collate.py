@@ -946,12 +946,27 @@ class TestValidation:
     def test_unknown_style_errors(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        m = two_tu_scope(tmp_path, style="msvc")
+        m = two_tu_scope(tmp_path, style="sunpro")
 
         assert collate(m, tmp_path) == 1
         err = capsys.readouterr().err
         assert "not implemented yet" in err
-        assert "'msvc'" in err
+        assert "'sunpro'" in err
+
+    def test_msvc_style_modmap(self, tmp_path: Path) -> None:
+        """MSVC gets /interface + /ifcOutput on providers and explicit
+        /reference name=path lines everywhere, replacing /ifcSearchDir."""
+        m = two_tu_scope(tmp_path, style="msvc", bmi_ext=".ifc")
+
+        assert collate(m, tmp_path) == 0
+        provider = (tmp_path / "obj.app/mod.cppm.o.modmap").read_text().splitlines()
+        importer = (tmp_path / "obj.app/main.cpp.o.modmap").read_text().splitlines()
+        assert provider[0] == "/interface"
+        assert "/ifcOutput" in provider
+        assert provider[provider.index("/ifcOutput") + 1].endswith(".ifc")
+        assert "/reference" in importer
+        assert importer[importer.index("/reference") + 1].startswith("M=")
+        assert importer[importer.index("/reference") + 1].endswith(".ifc")
 
     def test_gcc_style_modmap_is_a_module_mapper(self, tmp_path: Path) -> None:
         """GCC gets the libcody mapper dialect: provides and the transitive

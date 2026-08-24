@@ -520,7 +520,35 @@ def _gcc_modmap(edge: _Edge, modules: list[_Module]) -> str:
     return "".join(line + "\n" for line in lines)
 
 
-_MODMAP_STYLES = {"clang": _clang_modmap, "gcc": _gcc_modmap}
+def _msvc_modmap(edge: _Edge, modules: list[_Module]) -> str:
+    """Render one edge's MSVC modmap response file.
+
+    A providing TU is compiled as an interface unit (or an internal
+    partition — the two flags are mutually exclusive, D8016) and told where
+    to write its IFC; every TU gets an explicit ``/reference name=path`` per
+    transitively imported module, replacing ``/ifcSearchDir``.
+    """
+    # Response files split on whitespace, so a flag and its argument are
+    # separate lines — quoting "/ifcOutput <path>" whole would glue them
+    # into one unrecognized argument.
+    lines: list[str] = []
+    if edge.provides:
+        interface = any(m.is_interface for m in edge.provides)
+        lines.append("/interface" if interface else "/internalPartition")
+        for module in sorted(edge.provides, key=lambda m: m.logical):
+            lines.append("/ifcOutput")
+            lines.append(_rsp_quote(module.bmi))
+    for module in modules:
+        lines.append("/reference")
+        lines.append(_rsp_quote(f"{module.logical}={module.bmi}"))
+    return "".join(line + "\n" for line in lines)
+
+
+_MODMAP_STYLES = {
+    "clang": _clang_modmap,
+    "gcc": _gcc_modmap,
+    "msvc": _msvc_modmap,
+}
 
 
 def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:

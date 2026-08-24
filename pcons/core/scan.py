@@ -128,8 +128,9 @@ class Scanner:
         scan_depfile: Optional depfile suffix (e.g. ``".d"``) the scan
             command writes, so edits to files the scan *read* re-run just
             that scan.
-        scan_deps_style: ``"gcc"`` or ``"msvc"``; only used with
-            ``scan_depfile``.
+        scan_deps_style: ``"gcc"`` (a make-style depfile named by
+            ``scan_depfile``) or ``"msvc"`` (``/showIncludes`` lines on the
+            scan's output, no file — ``scan_depfile`` may then stay None).
         scan_deps: Extra implicit deps of every scan edge — typically the
             scan tool script itself, as a project-relative path.
         scan_vars: Optional callable ``(env, scanned_sources, governed_node)
@@ -647,6 +648,10 @@ class ScannerResolver:
         if scanner.scan_depfile:
             info_node._build_info["depfile"] = PathToken(suffix=scanner.scan_depfile)
             info_node._build_info["deps_style"] = scanner.scan_deps_style
+        elif scanner.scan_deps_style == "msvc":
+            # MSVC-style dep tracking has no depfile: the tool prints
+            # /showIncludes lines and ninja stores them in its deps log.
+            info_node._build_info["deps_style"] = "msvc"
         if scanner.scan_vars is not None:
             info_node._build_info["vars"] = scanner.scan_vars(env, scanned, governed)
         env.register_node(info_node)

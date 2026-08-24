@@ -6,8 +6,9 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pcons.configure.platform import get_platform
 from pcons.core.builder import CommandBuilder, MultiOutputBuilder, OutputSpec
@@ -463,6 +464,22 @@ class MsvcCxxCompiler(MsvcCompiler):
                 TargetPath(prefix="/Fo"),
                 SourcePath(),
             ],
+            # Scanned TUs compile with a reference to their collate-written
+            # modmap response file ($CXX_MODMAPREF is a per-edge variable —
+            # "@<obj>.modmap" — so one rule serves every TU in a flag
+            # class). cl.exe reads options from anywhere on the line.
+            "modobjcmd": [
+                "$cxx.cmd",
+                "$cxx.flags",
+                "${prefix(cxx.iprefix, cxx.includes)}",
+                "${prefix(cxx.isysprefix, cxx.system_includes)}",
+                "${prefix(cxx.dprefix, cxx.defines)}",
+                "$cxx.depflags",
+                "$CXX_MODMAPREF",
+                "/c",
+                TargetPath(prefix="/Fo"),
+                SourcePath(),
+            ],
         }
 
 
@@ -865,225 +882,262 @@ class MsvcToolchain(MsvcCompatibleToolchain):
         project: Project,
         source_obj_by_language: dict[str, list[tuple[Path, FileNode]]],
     ) -> None:
-        """Configure C++20 module compilation (MSVC).
+        """Set up C++20 module compilation (MSVC) via the Scanner.
 
-        Runs `cl.exe /scanDependencies` at configure time on every
-        participating C++ TU and drives flag injection from the scan
-        output rather than file extension: module providers get `/TP
-        /interface /ifcOutput <ifc>` (or `/internalPartition` when the
-        scanner reports is-interface=false), and every C++ TU gets
-        `/ifcSearchDir`. The Ninja dyndep file is regenerated at build
-        time by the edge `finish_module_pass` creates, with IFC paths
-        derived from logical module names.
+        Configure records static facts only: which targets are scanned,
+        each TU's compile flags and BMI-compatibility key, ``/TP`` on
+        extension-tagged module units (``.cppm`` isn't a native MSVC C++
+        extension). Content-derived facts — ``/interface`` vs
+        ``/internalPartition``, ``/ifcOutput``, and explicit ``/reference
+        name=path`` lines replacing ``/ifcSearchDir`` — flow through per-TU
+        ``cl /scanDependencies`` edges and a per-target collate at build
+        time, reaching each compile as a collate-written response file.
+        Header deps ride ``/showIncludes`` on both the scan and the compile.
         """
+        from pcons.core.scan import EdgeArgsSpec, Scanner, scope_id_for
+        from pcons.core.subst import NodeVar, SourcePath, TargetPath
+        from pcons.core.target import Target
         from pcons.toolchains.cxx_module_scanner import (
-            TuScanSpec,
-            add_tu_spec,
-            finish_module_pass,
-            keyed_bmi_path,
-            map_module_providers,
+            bmi_key_for_flags,
+            collect_module_scopes,
             merge_scan_compile_flags,
-            scan_translation_units,
-            setup_module_pass,
         )
 
-        setup = setup_module_pass(project, source_obj_by_language, "cl.exe")
-        if setup is None:
+        scopes = collect_module_scopes(project, source_obj_by_language)
+        if not scopes:
             return
         flag_spec = _msvc_std_module_flag_spec()
+        rel = project._path_resolver.make_execution_relative
 
-        # Pre-flag every extension-tagged module unit with /TP so cl.exe
-        # treats the file as C++ during scan and compile (.cppm isn't a
-        # native MSVC C++ extension; .ixx is). We deliberately do NOT add
-        # /interface here — that's a per-TU decision driven by the scan
-        # output (interface units get /interface, internal partition
-        # implementations get /internalPartition; the two are incompatible).
-        for _, obj_node in setup.cxx_module_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            if bi:
+        edge_facts: dict[int, dict[str, object]] = {}
+        by_compiler: dict[str, list[object]] = {}
+        envs: dict[int, Any] = {}
+        env_keys: dict[int, set[str]] = {}
+        target_keys: dict[int, set[str]] = {}
+
+        for scope in scopes:
+            env = scope.env
+            envs[id(env)] = env
+            cxx = getattr(env, "cxx", None)
+            compiler = str(getattr(cxx, "cmd", "cl.exe") or "cl.exe")
+            base_flags = list(getattr(cxx, "flags", None) or [])
+            for _src, obj_node, is_module_suffix in scope.pairs:
+                bi = obj_node._build_info
+                if bi is None:
+                    continue
                 context = bi.get("context")
-                if context is not None and hasattr(context, "flags"):
-                    if "/TP" not in context.flags:
-                        context.flags.append("/TP")
+                # Suffix is a static fact: /TP so cl treats .cppm as C++
+                # during scan and compile. /interface is NOT added here —
+                # interface vs internal partition is the scan's call, and
+                # the two are mutually exclusive (D8016).
+                if (
+                    is_module_suffix
+                    and context is not None
+                    and hasattr(context, "flags")
+                    and "/TP" not in context.flags
+                ):
+                    context.flags.append("/TP")
+                flags = merge_scan_compile_flags(
+                    base_flags,
+                    context,
+                    iprefix="/I",
+                    isysprefix="/external:I",
+                    dprefix="/D",
+                    root=project.root_dir,
+                )
+                obj_rel = rel(obj_node.path)
+                key = bmi_key_for_flags(flags, flag_spec)
+                edge_facts[id(obj_node)] = {
+                    "flags": flags,
+                    "key": key,
+                    "module_suffix": is_module_suffix,
+                    "obj_rel": obj_rel,
+                }
+                env_keys.setdefault(id(env), set()).add(key)
+                target_keys.setdefault(id(scope.target), set()).add(key)
 
-        specs: list[TuScanSpec] = []
-        for src, obj_node in setup.all_cxx_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            context = bi.get("context") if bi else None
-            compile_flags = merge_scan_compile_flags(
-                setup.base_flags,
-                context,
-                iprefix="/I",
-                isysprefix="/external:I",
-                dprefix="/D",
-                root=project.root_dir,
+                bi["command_var"] = "modobjcmd"
+                node_vars = bi.get("vars")
+                if node_vars is None:
+                    node_vars = {}
+                    bi["vars"] = node_vars
+                node_vars["CXX_MODMAPREF"] = "@" + obj_rel + ".modmap"
+            by_compiler.setdefault(compiler, []).append(scope.target)
+
+        # Dormant `import std;` edges per BMI key in use.
+        std_exports: dict[int, dict[str, str]] = {}
+        std_errors: dict[int, str | None] = {}
+        for env_id, env in envs.items():
+            exports_by_key, error = self._setup_std_modules(
+                project, env, env_keys.get(env_id, set()), flag_spec
             )
-            specs.append(add_tu_spec(setup, src, obj_node, compile_flags, flag_spec))
+            std_exports[env_id] = exports_by_key
+            std_errors[env_id] = error
 
-        # Run cl.exe /scanDependencies on each TU. Failures (e.g. compiler
-        # not on PATH) leave that result with p1689=None — propagated as
-        # "not a module provider" so the build doesn't get an /ifcOutput it
-        # can't satisfy. Errors are logged to stderr by the runner.
-        from pcons.toolchains._scan_cache import ScanCache
+        def scan_vars(
+            env: object, scanned: list[FileNode], governed: FileNode
+        ) -> dict[str, object]:
+            facts = edge_facts[id(governed)]
+            return {
+                "SCAN_FLAGS": list(cast("list[str]", facts["flags"])),
+                # /Fo takes the joined form; the p1689 primary-output is
+                # named after it, so the scan must know the real object.
+                "SCAN_FO": f"/Fo{facts['obj_rel']}",
+            }
 
-        scan_cache = ScanCache(setup.build_dir)
-        results = scan_translation_units(
-            specs, scanner=setup.compiler_cmd, scanner_style="msvc", cache=scan_cache
-        )
-        scan_cache.save()
+        def edge_extra(
+            env: object, scanned: list[FileNode], governed: FileNode
+        ) -> dict[str, object]:
+            facts = edge_facts[id(governed)]
+            return {
+                "key": facts["key"],
+                "module_suffix": facts["module_suffix"],
+            }
 
-        # Synthesize std/std.compat module builds where imported (appended
-        # to `results` so the dyndep file declares their .ifc outputs).
-        std_obj_nodes = self._inject_std_module_builds(
-            project, setup, results, flag_spec
-        )
+        def manifest_extra(env: object, target: object) -> dict[str, object]:
+            by_key = std_exports.get(id(env), {})
+            keys = target_keys.get(id(target), set())
+            extra: dict[str, object] = {
+                "style": "msvc",
+                "bmi_ext": ".ifc",
+                "moddir": f"cxx_modules/{scope_id_for(cast(Target, target))}",
+                "std_exports": sorted(by_key[k] for k in keys if k in by_key),
+            }
+            error = std_errors.get(id(env))
+            if error:
+                extra["std_error"] = error
+            return extra
 
-        # Detect same-class provider collisions and map each (key, module) to
-        # its providing object.
-        provider_obj = map_module_providers(
-            results, setup.spec_to_obj, setup.obj_key, setup.moddir, ".ifc"
-        )
-
-        # Inject per-TU module flags driven by the scan output, with a keyed
-        # /ifcOutput so the same logical module compiled with incompatible
-        # flags never writes to a single shared .ifc path.
-        for r in results:
-            if not r.is_module_provider:
-                continue
-            # Skip synthetic std-module entries — their flags are already in
-            # the literal command list, not in a CompileLinkContext.
-            if id(r.spec) not in setup.spec_to_obj:
-                continue
-            obj_node = setup.spec_to_obj[id(r.spec)]
-            key = setup.obj_key[id(obj_node)]
-            bi = getattr(obj_node, "_build_info", None)
-            if bi is None:
-                continue
-            context = bi.get("context")
-            if context is None or not hasattr(context, "flags"):
-                continue
-            ifc_path = keyed_bmi_path(r.logical_name, setup.moddir, key, ".ifc")
-            if "/ifcOutput" in context.flags:
-                continue
-            # /interface and /internalPartition are mutually exclusive (D8016).
-            # Choose based on whether the scanner reported this as an interface.
-            if "/TP" not in context.flags:
-                context.flags.append("/TP")
-            if r.is_interface:
-                context.flags.extend(["/interface", "/ifcOutput", ifc_path])
-            else:
-                context.flags.extend(["/internalPartition", "/ifcOutput", ifc_path])
-
-        # Every participating TU searches its own key's directory for the IFCs
-        # it imports. All of a TU's imports share its BMI-sensitive flags, so
-        # one /ifcSearchDir per key suffices.
-        for _, obj_node in setup.all_cxx_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            if not bi:
-                continue
-            context = bi.get("context")
-            if context is None or not hasattr(context, "flags"):
-                continue
-            searchdir = f"{setup.moddir}/{setup.obj_key[id(obj_node)]}"
-            if searchdir not in context.flags:
-                context.flags.extend(["/ifcSearchDir", searchdir])
-
-        finish_module_pass(
-            project,
-            setup,
-            results,
-            provider_obj,
-            std_obj_nodes,
-            ".ifc",
-            scanner=setup.compiler_cmd,
-            scanner_style="msvc",
+        cxx_suffixes = tuple(
+            sorted(
+                suffix
+                for suffix in self.source_suffixes()
+                if (handler := self.get_source_handler(suffix)) is not None
+                and handler.language in ("cxx", "cxx_module")
+            )
         )
 
-    def _inject_std_module_builds(
+        for compiler, targets in by_compiler.items():
+            scanner = Scanner(
+                "cxx-modules",
+                source_suffixes=cxx_suffixes,
+                # cl scans without compiling; /showIncludes still reports
+                # the headers read, which ninja stores in its deps log.
+                scan_command=[
+                    compiler,
+                    "/nologo",
+                    NodeVar("SCAN_FLAGS"),
+                    "/TP",
+                    "/showIncludes",
+                    "/scanDependencies",
+                    TargetPath(),
+                    NodeVar("SCAN_FO"),
+                    "/c",
+                    SourcePath(),
+                ],
+                info_suffix=".ddi",
+                scan_deps_style="msvc",
+                scan_vars=scan_vars,
+                edge_extra=edge_extra,
+                manifest_extra=manifest_extra,
+                collate_command=[
+                    sys.executable,
+                    "-m",
+                    "pcons.toolchains.cxx_collate",
+                    "--manifest",
+                    NodeVar("SCAN_MANIFEST"),
+                ],
+                # The modmap reference lives in the modobjcmd template as a
+                # per-edge variable; nothing is appended.
+                edge_args=EdgeArgsSpec(suffix=".modmap", var=None, token=None),
+                # Extra link inputs collate discovers (the std module's
+                # object): link.exe reads @file response files natively.
+                link_args=EdgeArgsSpec(
+                    suffix=".linkextras.rsp",
+                    var="CXX_LINKEXTRAS",
+                    token="@$CXX_LINKEXTRAS",
+                ),
+                link_args_target_types=("program", "shared_library"),
+            )
+            scanner.attach(*cast("list[Target]", targets))
+
+    def _setup_std_modules(
         self,
         project: Project,
-        setup: Any,
-        results: list[Any],
+        env: Any,
+        keys: set[str],
         flag_spec: Any,
-    ) -> dict[str, FileNode]:
-        """Synthesize build nodes for `import std;` / `import std.compat;`.
+    ) -> tuple[dict[str, str], str | None]:
+        """Describe dormant `import std;` build edges for *keys* (MSVC).
 
-        Locates Microsoft's `std.ixx` / `std.compat.ixx` under
-        `%VCToolsInstallDir%/modules/`, creates build nodes compiling them,
-        and appends synthetic TuScanResults to `results` so the dyndep file
-        declares the .ifc outputs. Returns {logical_name: obj_node}; the
-        caller wires these into target link inputs.
+        Same contract as the LLVM and GCC versions: the edges appear in the
+        build file and run only when some TU's collate discovers a real
+        `import std;`. Microsoft's STL is very ABI-sensitive (/MD vs /MDd,
+        _ITERATOR_DEBUG_LEVEL), so the std IFC is keyed by the same
+        BMI-sensitive flags its importers use and gated on a key actually
+        in use.
+
+        Returns ``(exports_by_key, error_text)``.
         """
+        import json as _json
+
+        from pcons.core.collate import write_text_if_changed
         from pcons.toolchains.cxx_module_scanner import (
-            TuScanResult,
-            TuScanSpec,
             bmi_key_for_flags,
+            select_std_module_flags,
         )
 
-        required_logical_names: set[str] = set()
-        for r in results:
-            for ln in r.required_logical_names:
-                required_logical_names.add(ln)
-
-        wanted = required_logical_names & {"std", "std.compat"}
-        if not wanted:
-            return {}
-
-        compiler_cmd = setup.compiler_cmd
-        moddir = setup.moddir
+        cxx = getattr(env, "cxx", None)
+        compiler_cmd = str(getattr(cxx, "cmd", "cl.exe") or "cl.exe")
+        base_flags = list(getattr(cxx, "flags", None) or [])
 
         std_modules_dir = _find_msvc_modules_dir()
         if std_modules_dir is None:
-            raise RuntimeError(
+            return {}, (
                 "`import std;` was used, but pcons could not locate "
                 "Microsoft's STL modules directory. It expects "
                 "`%VCToolsInstallDir%/modules/std.ixx` to exist; ensure "
-                "VCToolsInstallDir is set (typically by running vcvars64.bat) "
-                "or that vswhere can locate the VS install."
+                "VCToolsInstallDir is set (typically by running "
+                "vcvars64.bat) or that vswhere can locate the VS install."
             )
 
-        # Pick ABI-affecting flags from env.cxx.flags AND env.cxx.defines.
-        # Microsoft's STL is very ABI-sensitive: a `/MDd` consumer linked
-        # against a `/MD`-built std.obj is undefined behavior, and a
-        # mismatched `_ITERATOR_DEBUG_LEVEL` corrupts the heap.
-        from pcons.toolchains.cxx_module_scanner import select_std_module_flags
-
-        env_defines = list(getattr(setup.cxx_tool, "defines", None) or [])
-        dprefix = str(getattr(setup.cxx_tool, "dprefix", "/D") or "/D")
-        all_user_flags = list(setup.base_flags) + [f"{dprefix}{d}" for d in env_defines]
-
-        passthrough = select_std_module_flags(
-            all_user_flags, _msvc_std_module_flag_spec()
-        )
-        # The std module needs at least C++23. /std:c++latest is the
-        # safest default; /EHsc is required for std module compilation.
+        env_defines = list(getattr(cxx, "defines", None) or [])
+        dprefix = str(getattr(cxx, "dprefix", "/D") or "/D")
+        all_user_flags = list(base_flags) + [f"{dprefix}{d}" for d in env_defines]
+        passthrough = select_std_module_flags(all_user_flags, flag_spec)
         if not any(f.startswith("/std:") for f in passthrough):
             passthrough.insert(0, "/std:c++latest")
         if not any(f in {"/EHs", "/EHsc", "/EHa"} for f in passthrough):
             passthrough.append("/EHsc")
 
-        # Keyed by the same BMI-sensitive flags its importers use, so they
-        # resolve it from the same cxx_modules/<key>/ directory.
         std_key = bmi_key_for_flags(passthrough, flag_spec)
-        std_moddir = f"{moddir}/{std_key}"
+        if std_key not in keys:
+            return {}, None
 
-        std_obj_nodes: dict[str, FileNode] = {}
-        for logical in sorted(wanted):
+        build_dir = project.build_dir
+        build_dir_fs = (
+            build_dir if build_dir.is_absolute() else project.root_dir / build_dir
+        )
+        std_moddir = f"cxx_modules/std/{std_key}"
+        (build_dir_fs / std_moddir).mkdir(parents=True, exist_ok=True)
+
+        exports_modules: dict[str, dict[str, object]] = {}
+        prev_ifc_node: FileNode | None = None
+        for logical in ("std", "std.compat"):
             ixx_name = "std.ixx" if logical == "std" else "std.compat.ixx"
             ixx_path = std_modules_dir / ixx_name
             if not ixx_path.exists():
                 logger.warning(
-                    "import %s was requested but %s does not exist; skipping",
-                    logical,
+                    "%s does not exist; skipping the %s module",
                     ixx_path,
+                    logical,
                 )
                 continue
 
             ifc_rel = f"{std_moddir}/{logical}.ifc"
-            obj_rel = f"{moddir}/{logical}.obj"
-            obj_path = setup.build_dir / obj_rel
-
-            std_obj_node = project.node(obj_path)
+            obj_rel = f"{std_moddir}/{logical}.obj"
+            std_obj_node = project.node(build_dir / obj_rel)
+            ifc_node = project.node(build_dir / ifc_rel)
             std_obj_node._build_info = {
                 "tool": "cxx",
                 "command_var": "stdmodcmd",
@@ -1094,7 +1148,7 @@ class MsvcToolchain(MsvcCompatibleToolchain):
                     "/nologo",
                     *passthrough,
                     "/c",
-                    # std.compat imports std, let it find the keyed std.ifc.
+                    # std.compat imports std; let it find the keyed std.ifc.
                     "/ifcSearchDir",
                     std_moddir,
                     "/TP",
@@ -1104,32 +1158,44 @@ class MsvcToolchain(MsvcCompatibleToolchain):
                     f"/Fo{obj_rel}",
                     str(ixx_path).replace("\\", "/"),
                 ],
+                "outputs": {
+                    "obj": {"path": std_obj_node.path, "implicit": False},
+                    "ifc": {"path": ifc_node.path, "implicit": True},
+                },
             }
-            if setup.first_env is not None:
-                setup.first_env.register_node(std_obj_node)
+            ifc_node._build_info = {"primary_node": std_obj_node}
+            if prev_ifc_node is not None:
+                std_obj_node.depends(prev_ifc_node)
+            env.register_node(std_obj_node)
+            env.register_node(ifc_node)
+            prev_ifc_node = ifc_node
 
-            # Synthesize a TuScanResult so the dyndep file emits a
-            # `build <obj> | <ifc>` entry for it.
-            synthetic_spec = TuScanSpec(
-                src=ixx_path,
-                obj_rel=obj_rel,
-                compiler=compiler_cmd,
-                compile_flags=[],
+            exports_modules[logical] = {
+                "bmi": ifc_rel,
+                "key": std_key,
+                "obj": obj_rel,
+                "is_interface": True,
+                "requires": ["std"] if logical == "std.compat" else [],
+            }
+
+        if not exports_modules:
+            return {}, None
+        exports_rel = f"cxx_modules/std/{std_key}.exports.json"
+        write_text_if_changed(
+            build_dir_fs / exports_rel,
+            _json.dumps(
+                {
+                    "version": 1,
+                    "scanner": "cxx-modules",
+                    "scope": f"std/{std_key}",
+                    "modules": exports_modules,
+                },
+                indent=1,
+                sort_keys=True,
             )
-            synthetic_p1689 = {
-                "rules": [
-                    {
-                        "primary-output": obj_rel,
-                        "provides": [{"logical-name": logical, "is-interface": True}],
-                    }
-                ]
-            }
-            results.append(TuScanResult(spec=synthetic_spec, p1689=synthetic_p1689))
-            setup.obj_key[id(std_obj_node)] = std_key
-            setup.spec_to_obj[id(synthetic_spec)] = std_obj_node
-            std_obj_nodes[logical] = std_obj_node
-
-        return std_obj_nodes
+            + "\n",
+        )
+        return {std_key: exports_rel}, None
 
     def _variant_contributions(
         self, variant: str, **kwargs: Any
