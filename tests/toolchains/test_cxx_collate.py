@@ -946,12 +946,28 @@ class TestValidation:
     def test_unknown_style_errors(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        m = two_tu_scope(tmp_path, style="gcc")
+        m = two_tu_scope(tmp_path, style="msvc")
 
         assert collate(m, tmp_path) == 1
         err = capsys.readouterr().err
         assert "not implemented yet" in err
-        assert "'gcc'" in err
+        assert "'msvc'" in err
+
+    def test_gcc_style_modmap_is_a_module_mapper(self, tmp_path: Path) -> None:
+        """GCC gets the libcody mapper dialect: provides and the transitive
+        import closure as `<logical> <path>` lines, anchored by `$root .` —
+        GCC writes a provider's BMI where the mapper says, so the provide
+        line replaces clang's -fmodule-output."""
+        m = two_tu_scope(tmp_path, style="gcc", bmi_ext=".gcm")
+
+        assert collate(m, tmp_path) == 0
+        provider = (tmp_path / "obj.app/mod.cppm.o.modmap").read_text().splitlines()
+        importer = (tmp_path / "obj.app/main.cpp.o.modmap").read_text().splitlines()
+        assert provider[0] == "$root ."
+        assert any(line.startswith("M ") and line.endswith(".gcm") for line in provider)
+        assert importer[0] == "$root ."
+        assert any(line.startswith("M ") and line.endswith(".gcm") for line in importer)
+        assert not any(line.startswith("-x") for line in provider)
 
     def test_missing_dyndep_path_errors(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -353,7 +353,10 @@ def _load_edges(
             )
 
         info = _read_json(build_dir, info_rel, f"scan output for edge '{out}'")
-        _check_version(info, P1689_VERSION, f"scan output '{_norm(str(info_rel))}'")
+        # The P1689 "version" is the format's own revision counter, not
+        # pcons's: clang writes 1, GCC writes 0. Both carry the same rules.
+        if info.get("version") not in (0, P1689_VERSION):
+            _check_version(info, P1689_VERSION, f"scan output '{_norm(str(info_rel))}'")
 
         edge = _Edge(
             out=out,
@@ -501,7 +504,23 @@ def _clang_modmap(edge: _Edge, modules: list[_Module]) -> str:
     return "".join(line + "\n" for line in lines)
 
 
-_MODMAP_STYLES = {"clang": _clang_modmap}
+def _gcc_modmap(edge: _Edge, modules: list[_Module]) -> str:
+    """Render one edge's GCC module mapper file (libcody dialect).
+
+    One ``<logical> <path>`` line per module — both what this TU provides
+    (GCC writes the BMI where the mapper says, there is no
+    ``-fmodule-output``) and everything it imports, directly or
+    transitively. ``$root .`` anchors relative paths at the build dir.
+    """
+    lines: list[str] = ["$root ."]
+    for module in sorted(edge.provides, key=lambda m: m.logical):
+        lines.append(f"{module.logical} {module.bmi}")
+    for module in modules:
+        lines.append(f"{module.logical} {module.bmi}")
+    return "".join(line + "\n" for line in lines)
+
+
+_MODMAP_STYLES = {"clang": _clang_modmap, "gcc": _gcc_modmap}
 
 
 def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:
