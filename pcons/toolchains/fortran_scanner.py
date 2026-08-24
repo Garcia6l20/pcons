@@ -1,32 +1,43 @@
 # SPDX-License-Identifier: MIT
-"""Fortran module dependency scanner for Ninja dyndep.
+"""Fortran module scanner: the scan half of pcons's Scanner primitive.
 
-This module scans Fortran source files for MODULE and USE statements and
-produces a Ninja dyndep file that declares which object files produce and
-consume which .mod files.
+One invocation reads one Fortran source and reports what it provides and
+requires as a scan-info JSON document (schema in :mod:`pcons.core.collate`);
+the generic collate turns a scope's documents into a Ninja dyndep file.
 
-Run as:
+Run as one scan edge::
+
     python -m pcons.toolchains.fortran_scanner \\
-        --manifest fortran.manifest.json \\
-        --out fortran_modules.dyndep \\
-        --mod-dir modules
+        --scan-one src/greetings.f90 \\
+        --moddir modules \\
+        --out build/obj.hello/src/greetings.f90.o.fscan.json
 
-The manifest JSON format:
-    [{"src": "/abs/path/foo.f90", "obj": "obj.mylib/foo.f90.o"}, ...]
+``MODULE foo`` provides ``foo`` at ``<moddir>/foo.mod``, which the compile
+writes via ``-J <moddir>``; because that file is not one of the compile's
+declared outputs, each provided ``.mod`` is also reported as an extra output,
+which is what makes it a dyndep implicit output. ``USE bar`` requires ``bar``,
+unless this same file provides it or it is an intrinsic module. Module names
+are lowercased throughout: Fortran is case-insensitive and gfortran writes
+lowercase ``.mod`` files.
 
-All paths in the output are relative to the build directory (where Ninja runs).
+Limitation: Fortran ``INCLUDE`` lines are not followed, so a module
+declaration reached only through an include is invisible here.
+
+Paths in the output are relative to the build directory, where Ninja runs.
 """
 
 from __future__ import annotations
 
 # argparse, not click: a build-edge subprocess, where click costs ~14ms of
 # import per invocation. The CLI here is internal, typed only by pcons's
-# own generators.
+# own toolchains.
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+
+from pcons.core.collate import SCAN_INFO_VERSION, write_text_if_changed
 
 # Regex for MODULE <name> declarations (produces a .mod file)
 # Handles: MODULE foo, MODULE :: foo (gfortran doesn't need ::, but be flexible)
@@ -103,84 +114,62 @@ def scan_fortran_source(source_text: str) -> tuple[list[str], list[str]]:
     return produces, consumes
 
 
-def write_dyndep(
-    manifest: list[dict[str, str]],
-    mod_dir: str,
-    out_path: str,
-) -> None:
-    """Scan manifest sources and write Ninja dyndep file.
+def scan_info(source_text: str, moddir: str) -> dict[str, object]:
+    """The scan-info document for one Fortran source.
 
-    Args:
-        manifest: List of {"src": abs_path, "obj": build_rel_path} dicts.
-        mod_dir: Module directory, relative to build dir (e.g., "modules").
-        out_path: Output dyndep file path, relative to build dir.
+    Each provided module's ``.mod`` file appears in both ``provides`` (so
+    requiring edges can depend on it) and ``extra_outputs`` (so the dyndep
+    file claims the compile writes it) -- the contract collate enforces.
     """
-    entries: list[tuple[str, list[str], list[str]]] = []
-    for item in manifest:
-        src_path = item["src"]
-        obj_path = item["obj"]
-        try:
-            text = Path(src_path).read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            print(f"Warning: cannot read {src_path}: {e}", file=sys.stderr)
-            entries.append((obj_path, [], []))
-            continue
-
-        produces, consumes = scan_fortran_source(text)
-        entries.append((obj_path, produces, consumes))
-
-    lines = ["ninja_dyndep_version = 1", ""]
-    for obj_path, produces, consumes in entries:
-        mod_files = [f"{mod_dir}/{name}.mod" for name in produces]
-        dep_files = [f"{mod_dir}/{name}.mod" for name in consumes]
-
-        if mod_files:
-            implicit_out = " | " + " ".join(mod_files)
-        else:
-            implicit_out = ""
-
-        if dep_files:
-            implicit_in = " | " + " ".join(dep_files)
-        else:
-            implicit_in = ""
-
-        lines.append(f"build {obj_path}{implicit_out}: dyndep{implicit_in}")
-        lines.append("")
-
-    dyndep_text = "\n".join(lines)
-    Path(out_path).write_text(dyndep_text, encoding="utf-8")
+    produces, consumes = scan_fortran_source(source_text)
+    mod_dir = moddir.rstrip("/") or "."
+    provided = list(dict.fromkeys(produces))
+    mod_paths = [f"{mod_dir}/{name}.mod" for name in provided]
+    return {
+        "version": SCAN_INFO_VERSION,
+        "provides": [
+            {"name": name, "path": path}
+            for name, path in zip(provided, mod_paths, strict=True)
+        ],
+        "requires": consumes,
+        "extra_outputs": mod_paths,
+    }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Entry point when run as python -m pcons.toolchains.fortran_scanner."""
     parser = argparse.ArgumentParser(
-        description="Generate Ninja dyndep file for Fortran module dependencies"
+        prog="python -m pcons.toolchains.fortran_scanner",
+        description="Report one Fortran source's module provides and requires.",
     )
     parser.add_argument(
-        "--manifest",
+        "--scan-one",
         required=True,
-        help="Path to manifest JSON file (relative to build dir)",
+        metavar="SOURCE",
+        help="Fortran source file to scan",
+    )
+    parser.add_argument(
+        "--moddir",
+        default="modules",
+        help="module directory relative to the build dir (default: modules)",
     )
     parser.add_argument(
         "--out",
         required=True,
-        help="Output dyndep file path (relative to build dir)",
+        help="scan-info JSON file to write",
     )
-    parser.add_argument(
-        "--mod-dir",
-        default="modules",
-        help="Module directory relative to build dir (default: modules)",
-    )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
-        manifest_text = Path(args.manifest).read_text(encoding="utf-8")
-        manifest = json.loads(manifest_text)
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"Error reading manifest {args.manifest}: {e}", file=sys.stderr)
+        text = Path(args.scan_one).read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"pcons fortran scan: cannot read {args.scan_one}: {e}", file=sys.stderr)
         return 1
 
-    write_dyndep(manifest, args.mod_dir, args.out)
+    info = scan_info(text, args.moddir)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_text_if_changed(out, json.dumps(info, indent=1, sort_keys=True) + "\n")
     return 0
 
 
