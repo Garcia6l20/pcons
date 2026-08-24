@@ -34,6 +34,7 @@ nav:
       - Testing: testing.md
       - Qt: qt.md
       - Presets: presets.md
+      - Discovered dependencies (scanners): scanners.md
       - Using pcons as a library: library.md
   - Command Line:
       - CLI reference: cli.md
