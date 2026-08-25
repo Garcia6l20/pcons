@@ -316,6 +316,8 @@ class CompileLinkFactory:
         if auxiliary_inputs:
             target._builder_data["auxiliary_inputs"] = auxiliary_inputs
 
+        self._order_compiles_after_dependency_outputs(target)
+
         trace("resolve", "  Creating output for type: %s", target.target_type)
         if target.target_type == "static_library":
             self._create_static_library_output(target, env)
@@ -823,20 +825,14 @@ class CompileLinkFactory:
             if dep_libs:
                 output_node.add_inputs(dep_libs)
 
-        # Non-link outputs from transitive deps (e.g., a generated
-        # header produced by a code generator that also produces a
-        # library, like cargo + cbindgen). The link step must wait on
-        # them but they don't belong on the link command line; the
-        # consumer's compile steps must also wait on them so the
-        # generated header exists by the time the compiler runs.
+        # Non-link outputs from transitive deps (e.g., a generated header
+        # produced by a code generator that also produces a library, like
+        # cargo + cbindgen). The link step must wait on them but they don't
+        # belong on the link command line. The compiles are ordered after
+        # them separately, for every target type -- see
+        # _order_compiles_after_dependency_outputs.
         if dep_aux:
-            for aux in dep_aux:
-                if aux not in output_node.implicit_deps:
-                    output_node.implicit_deps.append(aux)
-            for inter in target.intermediate_nodes:
-                for aux in dep_aux:
-                    if aux not in inter.implicit_deps:
-                        inter.implicit_deps.append(aux)
+            output_node.depends(dep_aux)
 
         if auxiliary_inputs:
             linker_input_nodes = [node for node, _, _ in auxiliary_inputs]
@@ -890,6 +886,38 @@ class CompileLinkFactory:
         )
 
         return link_language, context
+
+    def _order_compiles_after_dependency_outputs(self, target: Target) -> None:
+        """Order every compile in *target* after its dependencies' non-link
+        outputs -- a generated header, say.
+
+        The file has to exist before anything that might include it compiles,
+        and before the first build nothing knows which sources do. For a
+        compile that records what it read (a depfile, or MSVC's
+        /showIncludes), that is all this states: order-only, so regenerating
+        the file doesn't recompile sources that never read it -- from the
+        first build onward the recorded deps report the ones that did. A
+        compile with no dependency tracking (preprocessed assembly, resource
+        compilers) has nothing to take over, so it keeps the plain implicit
+        dep and rebuilds whenever the generated file changes.
+
+        How the target itself is put together has no bearing on this, so a
+        static library or an object-only target needs it exactly as much as a
+        program does -- and gets no link step to hang it off.
+        """
+        dep_aux = [
+            node
+            for node in self._collect_dependency_outputs(target)
+            if not _is_link_input(node.path)
+        ]
+        if not dep_aux:
+            return
+        for node in target.intermediate_nodes:
+            bi = getattr(node, "_build_info", None) or {}
+            if bi.get("depfile") is not None or bi.get("deps_style"):
+                node.order_after(dep_aux)
+            else:
+                node.depends(dep_aux)
 
     def _collect_dependency_outputs(self, target: Target) -> list[FileNode]:
         """Collect output nodes from all dependencies.

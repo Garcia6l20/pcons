@@ -55,10 +55,10 @@ A modern Python-based build system that generates Ninja (or other) build files.
 | pcons.modules namespace | Implemented | Access loaded modules |
 | pcons.contrib package | Implemented | Bundle/platform helpers |
 | **Scanners** | | |
-| Scanner interface | Implemented | Protocol defined |
-| C/C++ header scanner | Planned | Relies on depfiles |
-| Build-time depfiles | Implemented | Via Ninja |
-| Fortran module scanner | Implemented | Ninja dyndep via fortran_scanner.py |
+| Scanner primitive | Implemented | Per-edge scan + per-target collate → dyndep |
+| C++20 module scanning | Implemented | LLVM, GCC, MSVC; P1689 scan edges |
+| Fortran module scanning | Implemented | fortran_scanner.py + the generic collate |
+| Build-time depfiles | Implemented | Via Ninja, including `env.Command` |
 
 **Legend:**
 - **Implemented** - Feature is complete and working
@@ -141,7 +141,7 @@ pcons generate
 2. Execute build scripts (Python)
 3. Build dependency graph (Nodes, Targets)
 4. Validate graph (cycles, missing sources)
-5. Run configure-time scanners if needed
+5. Wire any attached scanners (scan/collate edges; see [Scanner](#scanner))
 
 **Output:** In-memory Project with complete dependency graph
 
@@ -1024,50 +1024,95 @@ project.Install("dist/", [lib, archive, generated])
 4. Return the `Target`, not the output nodes
 
 ### Scanner
-> **Status: Partial** - Scanner protocol defined. Build-time depfiles work via Ninja. Configure-time scanning not yet implemented.
+> **Status: Implemented** - `pcons/core/scan.py` (declaration + wiring pass) and `pcons/core/collate.py` (build-time collate + schemas). Used by the C++20 module passes (LLVM, GCC, MSVC) and by Fortran.
 
-A Scanner discovers implicit dependencies (e.g., C/C++ header includes).
+A Scanner declares that the true dependencies of some build edges — and
+possibly their extra outputs, and parts of their command lines — are a
+function of their inputs' *content*. The primitive is core-owned and
+tool-agnostic: core knows nothing about modules or compilers, and toolchains
+and users declare scanners the same way.
+
+The contract it exists to enforce:
+
+> **Configure may depend only on static facts** — file names, suffixes, flags,
+> the target DAG. **Content-derived facts flow through scan → collate at build
+> time.**
 
 ```python
-class Scanner(Protocol):
-    def scan(self, node: FileNode, env: Environment) -> list[Node]:
-        """Return implicit dependencies of this node."""
-        ...
-
-    def depfile_rule(self) -> str | None:
-        """Return depfile generation flags, or None for configure-time scanning."""
-        # e.g., '-MD -MF $out.d' for GCC
-        ...
+scanner = Scanner(
+    "scene-refs",                    # lowercase-hyphenated, like a preset
+    source_suffixes=[".scene"],      # which sources of an edge get scanned
+    scan_command=[python, "$SRCDIR/tools/scan_scene.py", "$SOURCES", "$TARGET"],
+    scan_deps=["tools/scan_scene.py"],
+    provide_template="packs/{name}.pack",
+    edge_args=EdgeArgsSpec(...),     # per-edge args file collate writes
+    on_unresolved="error",
+)
+scanner.attach(pack_common, pack_level1)   # before project.resolve()
 ```
 
-**Current Status Note:**
+`attach()` takes targets, not files: one attached target is one **scope**.
+`ScannerResolver` runs inside `Resolver.resolve()` — after the toolchain
+`after_resolve` hooks (so toolchain-attached scanners are visible) and before
+command expansion (so per-edge variables exist when compile templates expand).
+Per scope it wires:
 
-Configure-time scanning (parsing source files during the generate phase to extract
-dependencies) is **not yet implemented** and is deferred. For C/C++ projects, this is
-not a problem because modern compilers support depfile generation, which is more
-accurate and doesn't require pcons to understand the preprocessor.
+- **one scan edge per governed edge** (a build edge with at least one source
+  matching `source_suffixes`): the scanned sources in, one scan-info JSON out.
+  All scan edges of a scanner share a single ninja rule — the commands carry
+  marker tokens and a constant description, and per-edge values ride ninja
+  variables.
+- **one collate edge per scope**: scan infos + a configure-written manifest +
+  the exports of scanned dependency scopes in; a ninja `dyndep` file, an
+  exports file, and optional per-edge args files out. `restat`, so a collate
+  that changes nothing dirties nothing.
+- **`dyndep = <the scope's dyndep file>` on every governed edge**, with that
+  file in order-only position (the loaded dyndep supplies the real deps;
+  rewriting the file must not dirty every edge by itself).
 
-**Why configure-time scanning is deferred:**
-- Build-time depfiles are more accurate (compiler knows all includes, macros, etc.)
-- Implementing a correct C/C++ scanner requires handling preprocessor conditionals
-- Most tools that pcons targets already support depfile generation
-- Adding a scanner for a language can be done later without breaking existing builds
+Three consequences fall out of the structure:
 
-**Scanning strategies:**
+- A generated source is just an input to its scan edge, so producer ordering
+  comes from the node graph. No phases, no existence checks, any number of
+  generation stages.
+- Ordering between scopes follows the target DAG: a scope resolves names
+  against its dependencies' exports. The dependency carries the exports;
+  content decides the order. The graph stays acyclic by construction, and
+  ninja connects cross-scope artifact references through dyndep implicit
+  outputs, which are global to the build.
+- Dyndep can't alter a command line, so content-derived flags travel in an
+  args file collate writes at a path fixed at configure time (`edge_args` per
+  edge, `link_args` per scope), referenced from the command by a static token.
 
-1. **Build-time depfiles** (preferred): Compiler generates deps during build
-   ```ninja
-   rule cc
-     depfile = $out.d
-     deps = gcc
-     command = gcc -MD -MF $out.d -c -o $out $in
-   ```
-   This is what pcons uses for C/C++ via toolchain SourceHandler.depfile settings.
+`pcons/core/collate.py` is both the generic build-time collate CLI
+(`python -m pcons.core.collate --manifest ...`) and the home of the three JSON
+schemas — scan info, manifest, exports — plus the shared dyndep writer. A
+toolchain that needs more can supply its own `collate_command` and pass extra
+facts through `manifest_extra` / `edge_extra`; `pcons/toolchains/cxx_collate.py`
+is the one such client.
 
-2. **Configure-time scanning** (not yet implemented): Parse sources during generate phase
-   - Would be used when tool doesn't support depfiles
-   - Results would be embedded in build graph
-   - Example use case: custom template languages, document includes
+Only ninja can express dyndep. `Generator.find_dyndep_use()` reports whether a
+project needs it, and the Makefile and Xcode generators refuse such a project
+with a clear error rather than writing build files that would be quietly
+wrong. `build.ninja` declares `ninja_required_version = 1.11` when any scope
+exists.
+
+Ordinary **header** dependencies need none of this: compilers report them
+through depfiles, which are more accurate than anything pcons could parse and
+require no understanding of the preprocessor.
+
+```ninja
+rule cc
+  depfile = $out.d
+  deps = gcc
+  command = gcc -MD -MF $out.d -c -o $out $in
+```
+
+Toolchains get that from their `SourceHandler` depfile settings; `env.Command`
+takes `depfile=` / `deps_style=` for user commands that report the same way.
+
+The user-facing guide is `docs/scanners.md`; the design record is
+`plans/plan-scanners.md`.
 
 ### Generator
 > **Status: Implemented** - Ninja and Makefile generators fully implemented. CompileCommandsGenerator and MermaidGenerator available. IDE generators planned.
@@ -1271,7 +1316,7 @@ This is sufficient for most cases and much simpler. The tradeoff:
 - Debug mode shows full dependency chains
 
 ### Extensibility Points
-> **Status: Implemented** - Builder registry fully implemented. Toolchain, scanner, and generator registries also available.
+> **Status: Implemented** - Builder registry fully implemented. Toolchain and generator registries also available; scanners are declared rather than registered.
 
 **Builders are plugins (fully implemented):**
 ```python
@@ -1293,10 +1338,11 @@ class MyBuilder:
 class MyToolchain(Toolchain): ...
 ```
 
-**Scanners are plugins:**
+**Scanners are declared, by toolchains or by build scripts alike:**
 ```python
-@register_scanner(".xyz")
-class XyzScanner(Scanner): ...
+scanner = Scanner("scene-refs", source_suffixes=[".scene"],
+                  scan_command=[python, "$SRCDIR/scan.py", "$SOURCES", "$TARGET"])
+scanner.attach(pack_common, pack_level1)
 ```
 
 **Generators are plugins:**
@@ -1474,7 +1520,8 @@ pcons/
 │   ├── builder.py           # Builder base class ................. [Implemented]
 │   ├── builder_registry.py  # Extensible builder registration .... [Implemented]
 │   ├── paths.py             # PathResolver for path handling ..... [Implemented]
-│   ├── scanner.py           # Scanner interface .................. [Partial]
+│   ├── scan.py              # Scanner + wiring pass .............. [Implemented]
+│   ├── collate.py           # Build-time collate + schemas ....... [Implemented]
 │   ├── target.py            # Target with usage requirements ..... [Implemented]
 │   ├── project.py           # Project container .................. [Implemented]
 │   ├── subst.py             # Variable substitution engine ....... [Implemented]
@@ -1513,10 +1560,6 @@ pcons/
 │   ├── mermaid.py           # Mermaid diagram generator .......... [Implemented]
 │   ├── compile_commands.py  # compile_commands.json .............. [Implemented]
 │   └── makefile.py          # Makefile generator ................. [Implemented]
-├── scanners/
-│   ├── __init__.py          # Scanner registry ................... [Planned]
-│   ├── c.py                 # C/C++ header scanner ............... [Planned - uses depfiles]
-│   └── ...
 ├── packages/
 │   ├── __init__.py          # Package loading utilities .......... [Implemented]
 │   ├── description.py       # PackageDescription class ........... [Implemented]

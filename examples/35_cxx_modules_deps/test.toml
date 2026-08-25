@@ -2,16 +2,15 @@
 
 [test]
 description = "Demonstrates C++20 named modules with Ninja dyndep ordering"
-# Configure a second time and require ninja to find nothing to do: the module
-# scans the second run reuses from its cache must answer what the first run's
-# scans did.
+# Configure a second time and require ninja to find nothing to do: the
+# manifests and build files a reconfigure rewrites must come out identical.
 configure_twice = true
 
 expected_outputs = [
     "build/obj.hello/src/mod1.cppm.o",
     "build/obj.hello/src/mod2.cppm.o",
     "build/obj.hello/src/main.cpp.o",
-    "build/cxx_modules.dyndep",
+    "build/scan/cxx-modules/cxx_modules.hello.dyndep",
     "build/hello",
 ]
 
@@ -76,20 +75,27 @@ expect_no_rebuild = ["build.ninja"]
 run = "./build/hello"
 expect_returncode = 0
 
-# A TU whose own module declarations change still regenerates: scanned
-# sources are configure dependencies, because what a TU provides or imports
-# drives flag injection, and only pcons can change flags.
+# A TU whose own module declarations change needs no reconfigure either:
+# its scan edge re-runs, the collate rewrites the dyndep and its modmap, and
+# only that TU recompiles. Sources are not configure dependencies, and the
+# other module objects are left alone — the dyndep file sits in order-only
+# position, so rewriting it dirties nothing by itself.
 [[rebuild]]
-description = "main.cpp dropping its imports regenerates the build files"
+description = "main.cpp dropping its imports rescans and recompiles only itself"
 write."src/main.cpp" = """
 // SPDX-License-Identifier: MIT
 int main() { return 0; }
 """
-expect_rebuild = ["build.ninja", "obj.hello/src/main.cpp.o", "hello"]
+expect_rebuild = ["obj.hello/src/main.cpp.o", "hello"]
+expect_no_rebuild = [
+    "build.ninja",
+    "obj.hello/src/mod1.cppm.o",
+    "obj.hello/src/mod2.cppm.o",
+]
 run = "./build/hello"
 
 [[rebuild]]
-description = "main.cpp gaining an import is compiled against the new module BMI"
+description = "main.cpp gaining an import is compiled against the module BMI"
 write."src/MyHeader.hpp" = """
 #pragma once
 
@@ -104,11 +110,11 @@ import Mod1;
 int main() { return mod1::answer() == 7 ? 0 : 1; }
 """
 expect_rebuild = [
-    "build.ninja",
     "obj.hello/src/mod1.cppm.o",
     "obj.hello/src/main.cpp.o",
     "hello",
 ]
+expect_no_rebuild = ["build.ninja"]
 run = "./build/hello"
 expect_returncode = 0
 

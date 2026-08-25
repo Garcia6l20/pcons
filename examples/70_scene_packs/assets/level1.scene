@@ -1,0 +1,4 @@
+name level1
+ref common
+prop rooms 12
+prop music level1-theme

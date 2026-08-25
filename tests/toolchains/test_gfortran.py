@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from pcons.toolchains.fortran_scanner import scan_fortran_source, write_dyndep
+from pcons import Project
+from pcons.core.target import Target
+from pcons.toolchains.fortran_scanner import main as fortran_scanner_main
+from pcons.toolchains.fortran_scanner import scan_fortran_source, scan_info
+from pcons.toolchains.gcc import GccArchiver
 from pcons.toolchains.gfortran import (
     FORTRAN_EXTENSIONS,
     GfortranCompiler,
@@ -229,59 +234,235 @@ def test_scan_self_use_excluded() -> None:
 
 
 # =============================================================================
-# Dyndep file output format tests
+# Scan-info document tests (the scan half of the Scanner primitive)
 # =============================================================================
 
 
-def test_write_dyndep_basic(tmp_path: Path) -> None:
-    """write_dyndep produces correct Ninja dyndep format."""
-    src_file = tmp_path / "greetings.f90"
-    src_file.write_text("""\
-MODULE greetings
-END MODULE greetings
-""")
-    manifest = [
-        {"src": str(src_file), "obj": "obj.hello/greetings.f90.o"},
+def test_scan_info_provider() -> None:
+    """A provided module is both a provide and an extra output."""
+    info = scan_info("MODULE greetings\nEND MODULE greetings\n", "modules")
+
+    assert info["version"] == 1
+    assert info["provides"] == [{"name": "greetings", "path": "modules/greetings.mod"}]
+    # The .mod is not a declared output of the compile, so collate needs it
+    # listed here to make it a dyndep implicit output.
+    assert info["extra_outputs"] == ["modules/greetings.mod"]
+    assert info["requires"] == []
+
+
+def test_scan_info_consumer() -> None:
+    """USE becomes a requirement, by logical name."""
+    info = scan_info("PROGRAM main\n  USE greetings\nEND PROGRAM\n", "modules")
+
+    assert info["provides"] == []
+    assert info["extra_outputs"] == []
+    assert info["requires"] == ["greetings"]
+
+
+def test_scan_info_multiple_modules_in_one_file() -> None:
+    """One compile may provide several modules; each gets both entries."""
+    src = textwrap.dedent("""\
+        MODULE alpha
+        END MODULE alpha
+        MODULE beta
+          USE alpha
+        END MODULE beta
+    """)
+    info = scan_info(src, "modules")
+
+    assert info["provides"] == [
+        {"name": "alpha", "path": "modules/alpha.mod"},
+        {"name": "beta", "path": "modules/beta.mod"},
     ]
-    out_path = str(tmp_path / "fortran_modules.dyndep")
-    write_dyndep(manifest, "modules", out_path)
-
-    content = Path(out_path).read_text()
-    assert "ninja_dyndep_version = 1" in content
-    assert "obj.hello/greetings.f90.o" in content
-    assert "modules/greetings.mod" in content
+    assert info["extra_outputs"] == ["modules/alpha.mod", "modules/beta.mod"]
+    # alpha is provided by this same file, so it is not a requirement.
+    assert info["requires"] == []
 
 
-def test_write_dyndep_consumer(tmp_path: Path) -> None:
-    """write_dyndep includes implicit inputs for USE statements."""
-    src_file = tmp_path / "main.f90"
-    src_file.write_text("""\
-PROGRAM main
-  USE greetings
-END PROGRAM
-""")
-    manifest = [
-        {"src": str(src_file), "obj": "obj.hello/main.f90.o"},
-    ]
-    out_path = str(tmp_path / "fortran_modules.dyndep")
-    write_dyndep(manifest, "modules", out_path)
+def test_scan_info_lowercases_names() -> None:
+    """Fortran is case-insensitive; gfortran writes lowercase .mod files."""
+    info = scan_info("MODULE MyMod\nEND MODULE\n", "modules")
 
-    content = Path(out_path).read_text()
-    assert "build obj.hello/main.f90.o: dyndep | modules/greetings.mod" in content
+    assert info["provides"] == [{"name": "mymod", "path": "modules/mymod.mod"}]
 
 
-def test_write_dyndep_no_modules(tmp_path: Path) -> None:
-    """write_dyndep handles sources with no MODULE/USE."""
-    src_file = tmp_path / "hello.f90"
-    src_file.write_text("PROGRAM hello\nPRINT *, 'Hi'\nEND PROGRAM\n")
-    manifest = [{"src": str(src_file), "obj": "obj.hello/hello.f90.o"}]
-    out_path = str(tmp_path / "fortran_modules.dyndep")
-    write_dyndep(manifest, "modules", out_path)
+def test_scan_info_skips_intrinsic_modules() -> None:
+    """Intrinsic modules have no .mod file to depend on."""
+    info = scan_info("PROGRAM p\n  USE iso_c_binding\nEND PROGRAM\n", "modules")
 
-    content = Path(out_path).read_text()
-    assert "ninja_dyndep_version = 1" in content
-    # Should have a build statement with no implicit deps or outputs
-    assert "build obj.hello/hello.f90.o: dyndep\n" in content
+    assert info["requires"] == []
+
+
+def test_scan_info_honors_moddir() -> None:
+    """Paths follow the environment's module directory."""
+    info = scan_info("MODULE m\nEND MODULE\n", "mods/fortran")
+
+    assert info["provides"] == [{"name": "m", "path": "mods/fortran/m.mod"}]
+
+
+def test_scan_one_cli_writes_the_document(tmp_path: Path) -> None:
+    """The --scan-one CLI writes the scan-info JSON collate reads."""
+    src = tmp_path / "greetings.f90"
+    src.write_text("MODULE greetings\nEND MODULE greetings\n")
+    out = tmp_path / "obj" / "greetings.f90.o.fscan.json"
+
+    rc = fortran_scanner_main(
+        ["--scan-one", str(src), "--moddir", "modules", "--out", str(out)]
+    )
+
+    assert rc == 0
+    assert json.loads(out.read_text()) == scan_info(src.read_text(), "modules")
+
+
+def test_scan_one_cli_reports_a_missing_source(tmp_path: Path, capsys) -> None:
+    """An unreadable source fails the scan edge rather than lying about it."""
+    rc = fortran_scanner_main(
+        [
+            "--scan-one",
+            str(tmp_path / "nope.f90"),
+            "--out",
+            str(tmp_path / "out.json"),
+        ]
+    )
+
+    assert rc == 1
+    assert "cannot read" in capsys.readouterr().err
+
+
+# =============================================================================
+# Scanner wiring (GfortranToolchain.after_resolve)
+# =============================================================================
+
+
+@pytest.fixture
+def fortran_toolchain() -> GfortranToolchain:
+    """A GfortranToolchain with its tools populated, needing no gfortran."""
+    tc = GfortranToolchain()
+    tc._tools = {
+        "fc": GfortranCompiler(),
+        "ar": GccArchiver(),
+        "link": GfortranLinker(),
+    }
+    tc._configured = True
+    return tc
+
+
+def _two_target_project(
+    tmp_path: Path, toolchain: GfortranToolchain
+) -> tuple[Project, Target, Target]:
+    """A library providing a module and a program using it, resolved."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "mathmod.f90").write_text("MODULE mathmod\nEND MODULE\n")
+    (tmp_path / "src" / "main.f90").write_text(
+        "PROGRAM p\n  USE mathmod\nEND PROGRAM\n"
+    )
+
+    project = Project("xt", root_dir=tmp_path, build_dir="build")
+    env = project.Environment(toolchain=toolchain)
+    lib = project.StaticLibrary("mathlib", env, sources=["src/mathmod.f90"])
+    prog = project.Program("app", env, sources=["src/main.f90"])
+    prog.link(lib)
+    project.resolve()
+    return project, lib, prog
+
+
+class TestScannerWiring:
+    """after_resolve declares one scanner and attaches it per Fortran target."""
+
+    def test_a_scope_per_fortran_target(self, tmp_path, monkeypatch, fortran_toolchain):
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+
+        assert set(project._scan_scopes) == {
+            ("fortran-modules", "xt::mathlib"),
+            ("fortran-modules", "xt::app"),
+        }
+
+    def test_each_fortran_compile_is_governed(
+        self, tmp_path, monkeypatch, fortran_toolchain
+    ):
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+
+        scope = project._scan_scopes[("fortran-modules", "xt::mathlib")]
+        governed = [n.path.name for n in scope.governed]
+
+        assert governed == ["mathmod.f90.o"]
+        assert scope.dyndep_rel == "scan/fortran-modules/xt.mathlib.dyndep"
+
+    def test_governed_compile_takes_the_dyndep_in_order_only_position(
+        self, tmp_path, monkeypatch, fortran_toolchain
+    ):
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+        scope = project._scan_scopes[("fortran-modules", "xt::app")]
+        obj = scope.governed[0]
+
+        assert obj._build_info["dyndep"] == scope.dyndep_rel
+        # Order-only: a rewritten dyndep must not by itself dirty the compile.
+        assert scope.collate_node in obj.order_only_deps
+        assert scope.collate_node not in obj.implicit_deps
+
+    def test_the_compile_restats(self, tmp_path, monkeypatch, fortran_toolchain):
+        """gfortran leaves an unchanged .mod alone; restat keeps ninja quiet."""
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+        scope = project._scan_scopes[("fortran-modules", "xt::mathlib")]
+
+        assert scope.governed[0]._build_info["restat"] is True
+
+    def test_a_dependent_scope_imports_its_dependency_exports(
+        self, tmp_path, monkeypatch, fortran_toolchain
+    ):
+        """Cross-target modules resolve through the dependency's exports."""
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+        lib_scope = project._scan_scopes[("fortran-modules", "xt::mathlib")]
+        app_scope = project._scan_scopes[("fortran-modules", "xt::app")]
+
+        manifest = json.loads((tmp_path / "build" / app_scope.manifest_rel).read_text())
+
+        assert manifest["imports"] == [lib_scope.exports_rel]
+        assert manifest["on_unresolved"] == "ignore"
+
+    def test_the_module_directory_is_created(
+        self, tmp_path, monkeypatch, fortran_toolchain
+    ):
+        """gfortran will not create the -J directory itself."""
+        monkeypatch.chdir(tmp_path)
+        _two_target_project(tmp_path, fortran_toolchain)
+
+        assert (tmp_path / "build" / "modules").is_dir()
+
+    def test_scan_command_carries_the_module_directory_per_edge(
+        self, tmp_path, monkeypatch, fortran_toolchain
+    ):
+        """One shared scan rule: the moddir rides a per-edge variable."""
+        monkeypatch.chdir(tmp_path)
+        project, _lib, _prog = _two_target_project(tmp_path, fortran_toolchain)
+        scope = project._scan_scopes[("fortran-modules", "xt::mathlib")]
+        info_node = next(
+            n
+            for n in scope.collate_node._build_info["sources"]
+            if n.path.name.endswith(".fscan.json")
+        )
+
+        assert info_node._build_info["vars"] == {"FC_MODDIR": "modules"}
+
+    def test_no_scanner_without_fortran_sources(
+        self, tmp_path, monkeypatch, gcc_toolchain
+    ):
+        """A project with no Fortran gets no Fortran scan wiring."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.c").write_text("int main(void) { return 0; }\n")
+        project = Project("c_only", root_dir=tmp_path, build_dir="build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        env.add_toolchain(GfortranToolchain())
+        project.Program("app", env, sources=["src/main.c"])
+        project.resolve()
+
+        assert project._scan_scopes == {}
 
 
 # =============================================================================

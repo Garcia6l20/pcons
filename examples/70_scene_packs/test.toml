@@ -1,0 +1,55 @@
+# Test configuration for the scene-packs example
+
+[test]
+description = "Content-discovered build order via a Scanner, over two generations of generated sources"
+
+expected_outputs = [
+    "build/bin/genscene1.py",
+    "build/gen/generated1.scene",
+    "build/gen/gen2_payload.pyfrag",
+    "build/bin/genscene2.py",
+    "build/gen/generated2.scene",
+    "build/packs/common.pack",
+    "build/packs/level1.pack",
+    "build/packs/level2.pack",
+]
+
+[verify]
+# There is no program to run here: the assertion is what ended up inside the
+# packs. A pack can only embed another pack's digest if that one was built
+# first, and nothing in pcons-build.py says which comes first -- the scanner
+# read it out of the scene files.
+commands = [
+    { run = "cat build/packs/level1.pack", expect_stdout = "embeds common" },
+    { run = "cat build/packs/level2.pack", expect_stdout = "embeds level1" },
+    # A scene the build generated, packed alongside a checked-in one.
+    { run = "cat build/packs/level1.pack", expect_stdout = "prop skybox aurora" },
+    # The generated scene of the second generation, whose generator was itself
+    # assembled from a fragment the first generation wrote.
+    { run = "cat build/packs/level2.pack", expect_stdout = "prop lights 7" },
+    # What collate handed the packer, instead of it parsing a ref line.
+    { run = "cat build/packs/level2.pack.refs", expect_stdout = "level1 packs/level1.pack" },
+]
+
+[[rebuild]]
+description = "Nothing changed"
+expect_no_work = true
+
+[[rebuild]]
+description = "Touching a scene re-scans and repacks, without disturbing the generators"
+touch = "assets/common.scene"
+expect_rebuild = ["packs*common.pack", "packs*level1.pack", "packs*level2.pack"]
+expect_no_rebuild = ["bin*", "gen*"]
+
+[[rebuild]]
+description = "Touching a generator fragment reassembles it, and stops there"
+touch = "src/gen1_payload.pyfrag"
+expect_rebuild = ["bin*genscene1.py"]
+# The reassembled generator is byte-identical, so write_if_different keeps it
+# from re-running -- no new scenes, no re-scan, no repacking.
+expect_no_rebuild = ["packs*", "gen*"]
+
+[skip]
+# Discovered dependencies are ninja dyndep; the make and Xcode generators
+# refuse a scanned project rather than emit a build with the wrong order.
+generators = ["make", "xcode"]

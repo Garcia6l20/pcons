@@ -198,6 +198,7 @@ class Project(_ProjectBuilders):
         "_package_finder_chain",
         "_configure_deps",
         "_pending_stages",
+        "_scan_scopes",
         "_child_index",
         "defined_at",
         "_parent",
@@ -289,6 +290,9 @@ class Project(_ProjectBuilders):
         self._configure_deps: list[Path] = []
         # Staged inputs that did not exist yet, so their blocks were skipped.
         self._pending_stages: list[Path] = []
+        # (scanner name, target qualified name) -> ScanScope, filled by the
+        # resolver's ScannerResolver pass (pcons/core/scan.py).
+        self._scan_scopes: dict[tuple[str, str], Any] = {}
         # Directory -> node keys beneath it, for get_child_nodes().
         self._child_index = _ChildNodeIndex()
         self.defined_at = defined_at

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT
+# Head fragment, shared by both scene generators. The build concatenates it
+# with a payload fragment -- one checked in, one produced by this build -- to
+# make a runnable program. Fragments aren't standalone modules, hence the
+# .pyfrag suffix: linters and type checkers would read a .py as a program.
+
+import sys
+from pathlib import Path
+
+
+def write(index: int, text: str) -> None:
+    """Write one of this program's outputs, named on the command line."""
+    path = Path(sys.argv[1 + index])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")

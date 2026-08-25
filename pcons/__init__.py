@@ -57,7 +57,8 @@ from pcons.core.preset import (  # noqa: E402
     register_preset,
 )
 from pcons.core.project import Project  # noqa: E402, F811
-from pcons.core.subst import PathToken, Verbatim  # noqa: E402
+from pcons.core.scan import ArgsFormat, EdgeArgsSpec, Scanner  # noqa: E402
+from pcons.core.subst import NodeVar, PathToken, Verbatim  # noqa: E402
 from pcons.core.target import Target  # noqa: E402
 from pcons.core.test import set_test_properties, set_test_property  # noqa: E402
 from pcons.core.vars import get_var, get_variant  # noqa: E402
@@ -179,6 +180,7 @@ __all__ = [
     "write_file",
     "FlagPair",
     "PathToken",
+    "NodeVar",
     "Verbatim",
     "Platform",
     "get_platform",
@@ -188,6 +190,10 @@ __all__ = [
     "Target",
     "Worker",
     "PythonWorker",
+    # Discovered dependencies (see pcons.core.scan)
+    "Scanner",
+    "EdgeArgsSpec",
+    "ArgsFormat",
     # Presets (contributed-preset registry)
     "register_preset",
     "preset",

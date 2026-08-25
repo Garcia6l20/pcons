@@ -89,3 +89,6 @@ uvx pcons
 | [`67_embedded_build`](https://github.com/DarkStarSystems/pcons/tree/main/examples/67_embedded_build) | pcons as a library: an embedded build step and a custom CLI driver |
 | [`68_command_dependencies`](https://github.com/DarkStarSystems/pcons/tree/main/examples/68_command_dependencies) | A declared command names the targets it needs, and `pcons run` builds them before dispatching |
 | [`69_custom_tools_pipeline`](https://github.com/DarkStarSystems/pcons/tree/main/examples/69_custom_tools_pipeline) | Custom tools chained into a document pipeline (git version -> pandoc -> footer) |
+| [`70_scene_packs`](https://github.com/DarkStarSystems/pcons/tree/main/examples/70_scene_packs) | Content-discovered build order via a Scanner, over two generations of generated sources |
+| [`71_cxx_modules_codegen`](https://github.com/DarkStarSystems/pcons/tree/main/examples/71_cxx_modules_codegen) | A generated C++ source alongside a C++20 module interface: per-target scanning keeps the generator out of the consumer's scan (issue #105) |
+| [`72_cxx_modules_codegen_interface`](https://github.com/DarkStarSystems/pcons/tree/main/examples/72_cxx_modules_codegen_interface) | A C++20 module interface unit written by a program the build compiles: the suffix is static, the scan waits for the generator, and the BMI is discovered |

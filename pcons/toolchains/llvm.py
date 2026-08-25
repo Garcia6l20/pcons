@@ -6,8 +6,9 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pcons.configure.platform import get_platform
 from pcons.core.builder import CommandBuilder
@@ -223,10 +224,22 @@ class ClangCxxCompiler(BaseTool):
         super().__init__("cxx", language="cxx")
 
     def default_vars(self) -> dict[str, object]:
+        base = gnu_compile_vars("clang++", "cxx")
+        # A scanned TU compiles with `modobjcmd`: `objcmd` plus a reference
+        # to its collate-written modmap response file, placed *before* the
+        # source because clang's -x (inside the modmap) applies only to
+        # inputs after it. $CXX_MODMAPREF is a per-edge variable ("@<path>"),
+        # so every scanned TU still shares one rule per flag class.
+        objcmd = list(cast("list[object]", base["objcmd"]))
+        modobjcmd = objcmd[:-4] + ["$CXX_MODMAPREF"] + objcmd[-4:]
         return {
-            **gnu_compile_vars("clang++", "cxx"),
+            **base,
+            "modobjcmd": modobjcmd,
             "moddir": "cxx_modules",
-            "modules": False,  # set True to enable C++20 module scanning
+            # None = auto (module-suffix sources opt the env in); True also
+            # scans module units in .cpp files; False disables scanning.
+            "modules": None,
+            "scan_deps": "",  # override the clang-scan-deps executable
         }
 
     def builders(self) -> dict[str, Builder]:
@@ -464,163 +477,225 @@ class LlvmToolchain(UnixToolchain):
         project: Project,
         source_obj_by_language: dict[str, list[tuple[Path, FileNode]]],
     ) -> None:
-        """Configure C++20 module compilation (LLVM/Clang).
+        """Set up C++20 module compilation (LLVM/Clang) via the Scanner.
 
-        Runs `clang-scan-deps` at configure time on every C++ TU in any
-        target that uses modules, and uses the scan output to drive flag
-        injection. Module-providing TUs get `-x c++-module` and
-        `-fmodule-output=<pcm>` regardless of file extension; the PCM path
-        comes from the logical module name (so partitions like
-        `M:P` resolve to `<moddir>/M-P.pcm`).
+        Configure records only static facts: which targets are scanned
+        (suffix/opt-in), each TU's compile flags and BMI-compatibility key,
+        and the per-scope BMI directory. Everything content-derived — who
+        provides or imports what, the `-x c++-module`/`-fmodule-output`
+        flags on providers, the `-fmodule-file=` references — flows through
+        per-TU scan edges and a per-target collate at build time
+        (pcons.toolchains.cxx_collate), reaching the compile command through
+        each TU's collate-written modmap response file.
         """
+        from pcons.core.scan import EdgeArgsSpec, Scanner, scope_id_for
+        from pcons.core.subst import NodeVar, Verbatim
         from pcons.toolchains.cxx_module_scanner import (
-            TuScanSpec,
-            add_tu_spec,
-            finish_module_pass,
-            keyed_bmi_path,
-            map_module_providers,
+            CLANG_SCAN_DEPS_HINTS,
+            bmi_key_for_flags,
+            collect_module_scopes,
+            find_scan_deps,
             merge_scan_compile_flags,
-            scan_translation_units,
-            setup_module_pass,
         )
 
-        setup = setup_module_pass(project, source_obj_by_language, "clang++")
-        if setup is None:
+        scopes = collect_module_scopes(project, source_obj_by_language, self)
+        if not scopes:
             return
         flag_spec = _clang_std_module_flag_spec()
+        rel = project._path_resolver.make_execution_relative
 
-        # Pre-flag extension-tagged module units with -x c++-module so the
-        # scanner sees them as modules (clang doesn't recognize .ixx natively).
-        # The scan output may identify *additional* TUs (e.g., partition units
-        # in .cpp files) as module providers — those get flagged below.
-        for _, obj_node in setup.cxx_module_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            if bi:
+        # Per-object facts the scanner callbacks read. Keys are id(obj_node);
+        # the callbacks run later in the same resolve pass.
+        edge_facts: dict[int, dict[str, object]] = {}
+        by_tools: dict[tuple[str, str], list[object]] = {}
+        envs: dict[int, Any] = {}
+        env_keys: dict[int, set[str]] = {}
+        target_keys: dict[int, set[str]] = {}
+
+        for scope in scopes:
+            env = scope.env
+            envs[id(env)] = env
+            scan_exe = find_scan_deps(env, ["clang-scan-deps"], CLANG_SCAN_DEPS_HINTS)
+            cxx = getattr(env, "cxx", None)
+            compiler = str(getattr(cxx, "cmd", "clang++") or "clang++")
+            base_flags = list(getattr(cxx, "flags", None) or [])
+            for _src, obj_node, is_module_suffix in scope.pairs:
+                bi = obj_node._build_info
+                if bi is None:
+                    continue
                 context = bi.get("context")
-                if context is not None and hasattr(context, "flags"):
-                    if "-x" not in context.flags:
-                        context.flags.extend(["-x", "c++-module"])
+                # Suffix is a static fact: pre-flag extension-tagged module
+                # units so both the scan and the compile see them as modules
+                # (clang doesn't recognize .ixx natively). Content-discovered
+                # providers in .cpp files get theirs from the modmap.
+                if (
+                    is_module_suffix
+                    and context is not None
+                    and hasattr(context, "flags")
+                    and "-x" not in context.flags
+                ):
+                    context.flags.extend(["-x", "c++-module"])
+                flags = merge_scan_compile_flags(
+                    base_flags, context, root=project.root_dir
+                )
+                obj_rel = rel(obj_node.path)
+                key = bmi_key_for_flags(flags, flag_spec)
+                edge_facts[id(obj_node)] = {
+                    "flags": flags,
+                    "key": key,
+                    "module_suffix": is_module_suffix,
+                    "obj_rel": obj_rel,
+                }
+                env_keys.setdefault(id(env), set()).add(key)
+                target_keys.setdefault(id(scope.target), set()).add(key)
+                # The compile switches to the modmap-aware template; the
+                # reference is a per-edge variable so the rule stays shared.
+                bi["command_var"] = "modobjcmd"
+                node_vars = bi.get("vars")
+                if node_vars is None:
+                    node_vars = {}
+                    bi["vars"] = node_vars
+                node_vars["CXX_MODMAPREF"] = "@" + obj_rel + ".modmap"
+            by_tools.setdefault((scan_exe, compiler), []).append(scope.target)
 
-        specs: list[TuScanSpec] = []
-        for src, obj_node in setup.all_cxx_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            context = bi.get("context") if bi else None
-            compile_flags = merge_scan_compile_flags(
-                setup.base_flags, context, root=project.root_dir
+        # Dormant `import std;` edges, one set per BMI key in use: described
+        # now, built only if some TU's collate actually requires them.
+        std_exports: dict[int, dict[str, str]] = {}
+        std_errors: dict[int, str | None] = {}
+        for env_id, env in envs.items():
+            exports_by_key, error = self._setup_std_modules(
+                project, env, env_keys.get(env_id, set()), flag_spec
             )
-            specs.append(add_tu_spec(setup, src, obj_node, compile_flags, flag_spec))
+            std_exports[env_id] = exports_by_key
+            std_errors[env_id] = error
 
-        from pcons.toolchains._scan_cache import ScanCache
+        def scan_vars(
+            env: object, scanned: list[FileNode], governed: FileNode
+        ) -> dict[str, object]:
+            facts = edge_facts[id(governed)]
+            # A list value is quoted token-by-token in the generated build
+            # file, so flags with spaces survive; a pre-joined string would
+            # be quoted whole, into one argument.
+            return {
+                "SCAN_FLAGS": list(cast("list[str]", facts["flags"])),
+                "SCAN_OBJ": str(facts["obj_rel"]),
+            }
 
-        scan_cache = ScanCache(setup.build_dir)
-        results = scan_translation_units(
-            specs, scanner="clang-scan-deps", scanner_style="clang", cache=scan_cache
-        )
-        scan_cache.save()
+        def edge_extra(
+            env: object, scanned: list[FileNode], governed: FileNode
+        ) -> dict[str, object]:
+            facts = edge_facts[id(governed)]
+            return {
+                "key": facts["key"],
+                "module_suffix": facts["module_suffix"],
+            }
 
-        # Synthesize std/std.compat module builds where imported (appended
-        # to `results` so the dyndep file declares their .pcm outputs).
-        std_obj_nodes = self._inject_clang_std_module_builds(
-            project, setup, results, flag_spec
-        )
+        def manifest_extra(env: object, target: object) -> dict[str, object]:
+            by_key = std_exports.get(id(env), {})
+            keys = target_keys.get(id(target), set())
+            extra: dict[str, object] = {
+                "style": "clang",
+                "bmi_ext": ".pcm",
+                "moddir": f"cxx_modules/{scope_id_for(cast(Target, target))}",
+                "std_exports": sorted(by_key[k] for k in keys if k in by_key),
+            }
+            error = std_errors.get(id(env))
+            if error:
+                extra["std_error"] = error
+            return extra
 
-        # Detect same-class provider collisions and map each (key, module) to
-        # its providing object.
-        provider_obj = map_module_providers(
-            results, setup.spec_to_obj, setup.obj_key, setup.moddir, ".pcm"
-        )
-
-        # For each module-providing TU (interfaces, partition interfaces,
-        # internal partitions), inject -x c++-module and a keyed
-        # -fmodule-output.
-        for r in results:
-            if not r.is_module_provider:
-                continue
-            # Skip synthetic std-module entries — their flags are already in
-            # the literal command list, not in a CompileLinkContext.
-            if id(r.spec) not in setup.spec_to_obj:
-                continue
-            obj_node = setup.spec_to_obj[id(r.spec)]
-            key = setup.obj_key[id(obj_node)]
-            bi = getattr(obj_node, "_build_info", None)
-            if bi is None:
-                continue
-            context = bi.get("context")
-            if context is None or not hasattr(context, "flags"):
-                continue
-            pcm_path = keyed_bmi_path(r.logical_name, setup.moddir, key, ".pcm")
-            module_out_flag = f"-fmodule-output={pcm_path}"
-            if module_out_flag not in context.flags:
-                context.flags.append(module_out_flag)
-            if "-x" not in context.flags:
-                context.flags.extend(["-x", "c++-module"])
-
-        # Every participating TU searches its own key's directory for the PCMs
-        # it imports. All of a TU's imports share its BMI-sensitive flags, so
-        # one -fprebuilt-module-path per key suffices.
-        for _, obj_node in setup.all_cxx_pairs:
-            bi = getattr(obj_node, "_build_info", None)
-            if not bi:
-                continue
-            context = bi.get("context")
-            if context is None or not hasattr(context, "flags"):
-                continue
-            modpath = (
-                f"-fprebuilt-module-path={setup.moddir}/{setup.obj_key[id(obj_node)]}"
+        cxx_suffixes = tuple(
+            sorted(
+                suffix
+                for suffix in self.source_suffixes()
+                if (handler := self.get_source_handler(suffix)) is not None
+                and handler.language in ("cxx", "cxx_module")
             )
-            if modpath not in context.flags:
-                context.flags.append(modpath)
-
-        finish_module_pass(
-            project,
-            setup,
-            results,
-            provider_obj,
-            std_obj_nodes,
-            ".pcm",
-            scanner="clang-scan-deps",
-            scanner_style="clang",
         )
 
-    def _inject_clang_std_module_builds(
+        for (scan_exe, compiler), targets in by_tools.items():
+            scanner = Scanner(
+                "cxx-modules",
+                source_suffixes=cxx_suffixes,
+                # Explicit markers, not "$TARGET" strings: a marker parsed
+                # out of "$TARGET.d" becomes a slice, which flips the whole
+                # command into indexed-output mode ($target_0) that a plain
+                # scan edge never defines.
+                scan_command=[
+                    scan_exe,
+                    "-format=p1689",
+                    "--",
+                    compiler,
+                    NodeVar("SCAN_FLAGS"),
+                    SourcePath(),
+                    "-c",
+                    "-o",
+                    NodeVar("SCAN_OBJ"),
+                    "-MT",
+                    TargetPath(),
+                    "-MD",
+                    "-MF",
+                    TargetPath(suffix=".d"),
+                    Verbatim(">"),
+                    TargetPath(),
+                ],
+                info_suffix=".ddi",
+                scan_depfile=".d",
+                scan_deps_style="gcc",
+                scan_vars=scan_vars,
+                edge_extra=edge_extra,
+                manifest_extra=manifest_extra,
+                collate_command=[
+                    sys.executable,
+                    "-m",
+                    "pcons.toolchains.cxx_collate",
+                    "--manifest",
+                    NodeVar("SCAN_MANIFEST"),
+                ],
+                # The modmap reference lives inside `modobjcmd` (it must
+                # precede the source file), so no token is appended here.
+                edge_args=EdgeArgsSpec(suffix=".modmap", var=None, token=None),
+                # Extra link inputs collate discovers (the std module's
+                # object): a response file clang expands itself, so it works
+                # with every linker clang drives, ld64 included.
+                link_args=EdgeArgsSpec(
+                    suffix=".linkextras.rsp",
+                    var="CXX_LINKEXTRAS",
+                    token="@$CXX_LINKEXTRAS",
+                ),
+                link_args_target_types=("program", "shared_library"),
+            )
+            scanner.attach(*cast("list[Target]", targets))
+
+    def _setup_std_modules(
         self,
         project: Project,
-        setup: Any,
-        results: list[Any],
+        env: Any,
+        keys: set[str],
         flag_spec: Any,
-    ) -> dict[str, FileNode]:
-        """Synthesize build nodes for `import std;` / `import std.compat;` (clang).
+    ) -> tuple[dict[str, str], str | None]:
+        """Describe dormant `import std;` build edges for *keys* (clang).
 
-        If the scan reports that any TU requires the `std` or `std.compat`
-        logical module, locate libc++'s `libc++.modules.json` (via
-        `-print-file-name`), find the corresponding `.cppm` source and the
-        system include dirs, and create a build node that compiles them
-        with the user's `-std=` / `-stdlib=` flags. A synthetic
-        TuScanResult is appended to `results` so the dyndep file declares
-        the resulting `.pcm` as an implicit output.
+        Nothing depends on these edges statically: they appear in the build
+        file and run only when some TU's collate discovers an actual
+        `import std;` and its dyndep requires the std BMI. A project that
+        never imports std builds nothing here.
 
-        Returns:
-            Dict mapping logical module name -> std obj FileNode for the
-            modules that were synthesized.
+        Returns ``(exports_by_key, error_text)``: per-key paths of the
+        configure-written std exports files (consumed by cxx_collate like
+        any other imports), and, when the toolchain has no std module
+        source, the install-hint text collate should show if `import std`
+        appears anyway.
         """
+        from pcons.core.collate import write_text_if_changed
         from pcons.toolchains.cxx_module_scanner import (
-            TuScanResult,
-            TuScanSpec,
             bmi_key_for_flags,
+            select_std_module_flags,
         )
 
-        required_logical_names: set[str] = set()
-        for r in results:
-            for ln in r.required_logical_names:
-                required_logical_names.add(ln)
-
-        wanted = required_logical_names & {"std", "std.compat"}
-        if not wanted:
-            return {}
-
-        compiler_cmd = setup.compiler_cmd
-        base_flags = setup.base_flags
-        moddir = setup.moddir
+        cxx = getattr(env, "cxx", None)
+        compiler_cmd = str(getattr(cxx, "cmd", "clang++") or "clang++")
+        base_flags = list(getattr(cxx, "flags", None) or [])
 
         manifest = _find_libcxx_modules_manifest(compiler_cmd, base_flags)
         if manifest is None:
@@ -629,7 +704,7 @@ class LlvmToolchain(UnixToolchain):
                 f"    {compiler_cmd} {stdlib_flags} -print-file-name={name}"
                 for name in _LIBCXX_MANIFEST_NAMES
             )
-            raise RuntimeError(
+            return {}, (
                 "`import std;` was used, but pcons could not locate libc++'s "
                 "C++ standard-library module manifest. Tried both the modern "
                 "and legacy layouts:\n"
@@ -638,71 +713,74 @@ class LlvmToolchain(UnixToolchain):
                 "(`brew install llvm`) — Apple Clang doesn't ship the std "
                 "module yet. On Linux, install a recent libc++ that includes "
                 "`libc++.modules.json` (LLVM ≥ 18). Alternatively use a "
-                "different toolchain (MSVC works on Windows, GCC ≥ 15 works on Linux)."
+                "different toolchain (MSVC works on Windows, GCC ≥ 15 works "
+                "on Linux)."
             )
         modules = _parse_libcxx_manifest(manifest)
 
-        # Pick ABI-affecting flags from the user's compile flags AND from
-        # env.cxx.defines (where users typically put `_LIBCPP_HARDENING_MODE`
-        # and other libc++ feature-test macros).
-        from pcons.toolchains.cxx_module_scanner import select_std_module_flags
-
-        env_defines = list(getattr(setup.cxx_tool, "defines", None) or [])
-        dprefix = str(getattr(setup.cxx_tool, "dprefix", "-D") or "-D")
+        # ABI-affecting flags from the user's compile flags AND env.cxx
+        # defines (where feature-test macros like _LIBCPP_HARDENING_MODE
+        # live). The std BMI is keyed by the same BMI-sensitive subset its
+        # importers use, so they resolve it under a matching key.
+        env_defines = list(getattr(cxx, "defines", None) or [])
+        dprefix = str(getattr(cxx, "dprefix", "-D") or "-D")
         all_user_flags = list(base_flags) + [f"{dprefix}{d}" for d in env_defines]
-
         passthrough = select_std_module_flags(
             all_user_flags, _clang_std_module_flag_spec()
         )
-        # The std module needs at least C++20 and libc++; if the user
-        # didn't say, default sensibly so the std-module compile doesn't
-        # fail in a confusing way.
         if not any(f.startswith("-std=") for f in passthrough):
             passthrough.insert(0, "-std=c++20")
         if not any(f.startswith("-stdlib=") for f in passthrough):
             passthrough.append("-stdlib=libc++")
 
-        # Keyed by the same BMI-sensitive flags its importers use, so they
-        # resolve it from the same cxx_modules/<key>/ directory.
         std_key = bmi_key_for_flags(passthrough, flag_spec)
-        std_moddir = f"{moddir}/{std_key}"
+        if std_key not in keys:
+            # No scoped TU shares the std BMI's flag class; an import could
+            # never resolve against it, so describing the edges would only
+            # add dead lines to the build file.
+            return {}, None
 
-        std_obj_nodes: dict[str, FileNode] = {}
-        for logical in sorted(wanted):
-            if logical not in modules:
+        build_dir = project.build_dir
+        build_dir_fs = (
+            build_dir if build_dir.is_absolute() else project.root_dir / build_dir
+        )
+        std_moddir = f"cxx_modules/std/{std_key}"
+        (build_dir_fs / std_moddir).mkdir(parents=True, exist_ok=True)
+
+        exports_modules: dict[str, dict[str, object]] = {}
+        prev_pcm_node: FileNode | None = None
+        for logical in ("std", "std.compat"):
+            entry = modules.get(logical)
+            if entry is None:
                 logger.warning(
-                    "import %s requested but not in libc++ manifest %s; skipping",
-                    logical,
-                    manifest,
+                    "%s not in libc++ manifest %s; skipping", logical, manifest
                 )
                 continue
-            entry = modules[logical]
             cppm_path: Path = entry["source-path"]
             sys_includes: list[Path] = entry["system-include-directories"]
             if not cppm_path.is_file():
                 logger.warning(
-                    "import %s: manifest pointed at %s which doesn't exist; skipping",
+                    "%s: manifest pointed at %s which doesn't exist; skipping",
                     logical,
                     cppm_path,
                 )
                 continue
 
             pcm_rel = f"{std_moddir}/{logical}.pcm"
-            obj_rel = f"{moddir}/{logical}.o"
-            obj_path = setup.build_dir / obj_rel
-
-            std_obj_node = project.node(obj_path)
+            obj_rel = f"{std_moddir}/{logical}.o"
+            std_obj_node = project.node(build_dir / obj_rel)
+            pcm_node = project.node(build_dir / pcm_rel)
             cmd_list: list[str] = [
                 compiler_cmd,
                 *passthrough,
                 # `std` starts with a reserved identifier and libc++'s
-                # std.cppm uses reserved user-defined literals; both
-                # warn under -Werror unless suppressed.
+                # std.cppm uses reserved user-defined literals; both warn
+                # under -Werror unless suppressed.
                 "-Wno-reserved-module-identifier",
                 "-Wno-reserved-identifier",
                 "-Wno-reserved-user-defined-literal",
                 *(f"-isystem{d}" for d in sys_includes),
-                # std.compat imports std, let it find the keyed std.pcm.
+                # std.compat imports std; let it find the keyed std.pcm.
                 f"-fprebuilt-module-path={std_moddir}",
                 "-x",
                 "c++-module",
@@ -718,30 +796,44 @@ class LlvmToolchain(UnixToolchain):
                 "description": f"CXX {logical} module",
                 "sources": [project.node(cppm_path)],
                 "command": cmd_list,
+                "outputs": {
+                    "obj": {"path": std_obj_node.path, "implicit": False},
+                    "pcm": {"path": pcm_node.path, "implicit": True},
+                },
             }
-            if setup.first_env is not None:
-                setup.first_env.register_node(std_obj_node)
+            pcm_node._build_info = {"primary_node": std_obj_node}
+            if prev_pcm_node is not None:
+                std_obj_node.depends(prev_pcm_node)
+            env.register_node(std_obj_node)
+            env.register_node(pcm_node)
+            prev_pcm_node = pcm_node
 
-            synthetic_spec = TuScanSpec(
-                src=cppm_path,
-                obj_rel=obj_rel,
-                compiler=compiler_cmd,
-                compile_flags=[],
+            exports_modules[logical] = {
+                "bmi": pcm_rel,
+                "key": std_key,
+                "obj": obj_rel,
+                "is_interface": True,
+                "requires": ["std"] if logical == "std.compat" else [],
+            }
+
+        if not exports_modules:
+            return {}, None
+        exports_rel = f"cxx_modules/std/{std_key}.exports.json"
+        write_text_if_changed(
+            build_dir_fs / exports_rel,
+            json.dumps(
+                {
+                    "version": 1,
+                    "scanner": "cxx-modules",
+                    "scope": f"std/{std_key}",
+                    "modules": exports_modules,
+                },
+                indent=1,
+                sort_keys=True,
             )
-            synthetic_p1689 = {
-                "rules": [
-                    {
-                        "primary-output": obj_rel,
-                        "provides": [{"logical-name": logical, "is-interface": True}],
-                    }
-                ]
-            }
-            results.append(TuScanResult(spec=synthetic_spec, p1689=synthetic_p1689))
-            setup.obj_key[id(std_obj_node)] = std_key
-            setup.spec_to_obj[id(synthetic_spec)] = std_obj_node
-            std_obj_nodes[logical] = std_obj_node
-
-        return std_obj_nodes
+            + "\n",
+        )
+        return {std_key: exports_rel}, None
 
 
 # =============================================================================

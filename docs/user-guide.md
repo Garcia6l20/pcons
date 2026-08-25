@@ -410,18 +410,41 @@ It returns a `Target`, so the library can be a default target, an alias member, 
 
 #### C++20 modules
 
+Modules just work: name the sources, link the targets, build.
+
+```python
+env = project.Environment(toolchain="llvm")
+env.cxx.set_standard("c++20")
+
+mod = project.StaticLibrary("m", env, sources=["src/mod.cppm"])
+app = project.Program("app", env, sources=["src/main.cpp"])  # says `import m;`
+app.link(mod)
+```
+
 When a target has at least one source whose extension is in
-`{.cppm, .ixx, .cxxm, .c++m}`, pcons runs the C++ module scanner
-(`cl /scanDependencies` for MSVC, `clang-scan-deps` for LLVM/Clang) on
-every C++ TU in that target at configure time, and uses the P1689R5
-output to inject the right compile flags (`/interface` vs
-`/internalPartition` on MSVC, `-fmodule-output` and `-x c++-module` on
-clang). The Ninja `dyndep` file that orders compilations is regenerated
-by a build-time scan step, so a header that gains or loses an `import`
-reorders the next build on its own; a scan cache keeps the step cheap.
+`{.cppm, .ixx, .cxxm, .c++m}`, pcons attaches a
+[scanner](scanners.md) to it. Each translation unit gets its own build-time scan edge
+(`clang-scan-deps`, `cl /scanDependencies`, or GCC's own preprocess-only
+pass, all emitting P1689R5), and each target gets one collate edge that
+turns those reports into the target's Ninja `dyndep` file and writes each
+compile a *modmap* carrying the flags that depend on what the scan found:
+`-x c++-module` and `-fmodule-file=` for clang, mapper lines for GCC,
+`/interface` or `/internalPartition` and `/reference` for MSVC.
 Partition units that live in `.cpp` files (interface partitions like
 `export module M:P;` or internal partitions like `module M:P;`) are
-detected from the scan output and handled correctly.
+recognized there, from the scan.
+
+!!! note
+    - **A cross-target import needs the target dependency.** A scope resolves
+      a module name against its own units and against the exports of the
+      targets it depends on, so `app` must `link()` (or `add_dependency()`)
+      the target that compiles the interface. The dependency carries the
+      exports; the content decides the compile order.
+
+Scanned builds use `dyndep`, so they need ninja ≥ 1.11 — pcons writes
+that floor into `build.ninja` — and only the ninja generator can express
+them. The Makefile and Xcode generators refuse such a project with a
+clear error.
 
 If your project has *no* sources with one of those extensions but still
 uses C++ modules — e.g. fmtlib's `src/fmt.cc` (primary interface in
@@ -435,19 +458,39 @@ env.cxx.flags.extend(["/std:c++latest", "/EHsc"])
 project.Program("hello", env, sources=["main.cpp"])  # main.cpp does `import std;`
 ```
 
-`import std;` and `import std.compat;` work out of the box on MSVC:
-pcons synthesizes a build node for `%VCToolsInstallDir%/modules/std.ixx`
-(or `std.compat.ixx`), wires its `.ifc` into the dyndep file, and adds
-the resulting `.obj` to every importing target's link inputs.
+`env.cxx.modules` has three states. The default, `None`, is auto: an
+extension-tagged module source opts its environment in. `True` also
+scans module units written in `.cpp`/`.cc`, as above. `False` disables
+scanning for that environment outright — it beats the extension opt-in,
+and warns if a module interface is then going to compile as plain C++.
+`env.cxx.scan_deps` overrides which scanner executable is used, for a
+`clang-scan-deps` that isn't on `PATH`.
+
+`import std;` and `import std.compat;` are entirely dynamic. Configure
+describes the standard library's module edges but wires nothing to them;
+the first translation unit whose scan reports the import is what pulls
+the BMI into the dyndep file and the resulting object into the link. A
+project that never imports std builds and links nothing extra. It needs
+a standard library that ships the module source: libc++ with
+`libc++.modules.json` (LLVM ≥ 18; on macOS that means Homebrew LLVM, not
+Apple Clang), GCC 15+ with `libstdc++-15-dev`, or MSVC's
+`%VCToolsInstallDir%/modules/std.ixx`. If none is there, the error
+arrives when a file actually imports std, naming what was missing.
 
 Compiled module interfaces (BMIs — `.gcm` / `.pcm` / `.ifc`) are only
 consumable by translation units built with matching BMI-sensitive flags
 (C++ dialect, ABI options, stdlib feature macros). pcons keys each BMI by
 a hash of those flags and stores it under
-`<build_dir>/cxx_modules/<hash>/`, so targets that compile a module
-interface with compatible flags share one BMI, while targets using an
-incompatible dialect (say `-std=c++23` vs `-std=c++26`) transparently get
-their own. See `examples/39_bmi_compat`.
+`<build_dir>/cxx_modules/<target>/<hash>/`, so targets that compile a
+module interface with compatible flags share one BMI, while targets using
+an incompatible dialect (say `-std=c++23` vs `-std=c++26`) transparently
+get their own. See `examples/39_bmi_compat`.
+
+A module source the build generates itself needs nothing special: its
+`.cppm` suffix is a static fact read off the declared path, and the scan
+edge waits for the generator like any other consumer of the file. See
+`examples/71_cxx_modules_codegen` and
+`examples/72_cxx_modules_codegen_interface`.
 
 These are handled automatically when you add sources to a target:
 
@@ -2461,14 +2504,9 @@ Inspect and reset:
 pcons cache list      # show persisted vars, variant, generator
 pcons cache show      # same, plus the cache file path and source dir
 pcons cache path      # print the cache file path
-pcons cache clear     # empty the cache, scan results included
+pcons cache clear     # empty the cache
 pcons generate --fresh PORT=y   # ignore the old cache, start clean
 ```
-
-A C++20 modules build keeps one more file there, `pcons_scan_cache.json`: the
-module dependency scans of the last configure, reused while nothing they read
-has changed. It is safe to delete at any time, at the cost of one rescan, and
-`pcons cache clear` deletes it along with the settings.
 
 Change settings through these commands, not by editing `pcons_cache.json`. The
 file is not a regeneration input, so a hand-edit is not picked up automatically,
@@ -3248,6 +3286,8 @@ Either form registers the path as a configure dependency, so the build system re
 Pair it with `write_if_different=True` (see [Custom Commands](#custom-commands-with-envcommand)) or a re-run of the generator will invalidate everything downstream of every output it touched. A complete worked example is `examples/57_staged_generation`.
 
 Ninja handles this natively; GNU make 4.x does too. GNU make 3.81 — still `/usr/bin/make` on macOS — compares makefile prerequisite timestamps at whole-second granularity and can miss a manifest written in the same second, so use ninja or a modern GNU make for staged builds.
+
+Staged generation answers "what *set* of targets exists", and pays for the answer with a reconfigure pass. If the question is instead "what does this file's *content* imply" — which other artifacts this one depends on, what extra outputs it writes, what flags its command needs — that's a [scanner](scanners.md), and it's resolved during the build with no reconfigure. The two compose: a staged pass can define scanned targets, and scanning a generated file needs no staging at all.
 
 ### Persistent Workers
 

@@ -1042,6 +1042,102 @@ class TestExtraObjectDeps:
             env.cc.Object("build/manual.o", "main.c", depnds=["x.h"])
 
 
+class TestGeneratedSourcesOfALinkedDep:
+    """A dependency's generated files order the dependent's compiles, no more.
+
+    The generated file has to exist before anything that *might* include it
+    compiles, and before the first build nothing knows which sources do. That
+    is order-only (``||``). Making it implicit (``|``) would claim every
+    translation unit consumes it, so regenerating one file would recompile
+    the whole target; the depfile already reports which ones really did.
+    """
+
+    @staticmethod
+    def _build(tmp_path, gcc_toolchain, consumer="Program"):
+        project = Project("test", root_dir=tmp_path, build_dir="build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        gen = env.Command(
+            target="gen.c",
+            source="gen.py",
+            command="python $SOURCE $TARGET",
+        )
+        lib = project.StaticLibrary("genlib", env, sources=[gen])
+        app = getattr(project, consumer)("app", env, sources=["main.c"])
+        app.link(lib)
+
+        project.resolve()
+        NinjaGenerator().generate(project)
+        BaseGenerator._generate_pending(project)
+        content = normalize_path((tmp_path / "build" / "build.ninja").read_text())
+        return content.splitlines()
+
+    def test_compiles_are_ordered_after_it_only(self, tmp_path, gcc_toolchain):
+        lines = self._build(tmp_path, gcc_toolchain)
+        obj_line = next(ln for ln in lines if ln.startswith("build obj.app/"))
+
+        assert "|| gen.c" in obj_line
+        # Not implicit: `|` would mean "this compile consumes gen.c".
+        assert " | " not in obj_line
+
+    def test_a_depfile_less_compile_keeps_the_implicit_dep(
+        self, tmp_path, gcc_toolchain
+    ):
+        """Order-only is only right when a depfile can take over. A compile
+        with no dependency tracking (preprocessed .s assembly, resource
+        compilers) records nothing, so it must rebuild whenever the
+        generated file changes -- found by review as a silently stale
+        binary (`.include "gen.inc"` never re-assembled)."""
+        project = Project("test", root_dir=tmp_path, build_dir="build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        (tmp_path / "helper.c").write_text("int h(void){return 1;}\n")
+        (tmp_path / "val.s").write_text('.include "gen.inc"\n')
+        gen = env.Command(
+            target="gen.inc",
+            source="gen.py",
+            command="python gen.py $SOURCE $TARGET",
+        )
+        lib = project.StaticLibrary("genlib", env, sources=["helper.c"])
+        lib.link(gen)
+        app = project.Program("app", env, sources=["main.c", "val.s"])
+        app.link(lib)
+
+        project.resolve()
+        NinjaGenerator().generate(project)
+        BaseGenerator._generate_pending(project)
+        content = normalize_path((tmp_path / "build" / "build.ninja").read_text())
+        lines = content.splitlines()
+        c_line = next(ln for ln in lines if ln.startswith("build obj.app/main.c"))
+        s_line = next(ln for ln in lines if ln.startswith("build obj.app/val.s"))
+
+        assert "|| gen.inc" in c_line
+        assert "| gen.inc" in s_line and "|| gen.inc" not in s_line
+
+    def test_the_link_still_waits_on_it(self, tmp_path, gcc_toolchain):
+        lines = self._build(tmp_path, gcc_toolchain)
+        # "app" on POSIX, "app.exe" on Windows.
+        link_line = next(ln for ln in lines if ln.startswith("build app"))
+
+        assert "gen.c" in link_line.split(" | ", 1)[1]
+
+    @pytest.mark.parametrize(
+        "consumer", ["Program", "SharedLibrary", "StaticLibrary", "ObjectLibrary"]
+    )
+    def test_every_target_type_orders_its_compiles(
+        self, tmp_path, gcc_toolchain, consumer
+    ):
+        """The ordering is a property of compiling, not of linking.
+
+        A static library has no link step to hang it off, but its sources may
+        include the generated file just the same.
+        """
+        lines = self._build(tmp_path, gcc_toolchain, consumer=consumer)
+        obj_line = next(ln for ln in lines if ln.startswith("build obj.app/"))
+
+        assert "|| gen.c" in obj_line
+
+
 class TestNinjaTestRule:
     def test_test_rule_quotes_spaced_python_exe(
         self, tmp_path, gcc_toolchain, monkeypatch

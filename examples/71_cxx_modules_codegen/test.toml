@@ -1,0 +1,66 @@
+# Test configuration for the cxx-modules-codegen example
+
+[test]
+description = "A generated C++ source alongside a C++20 module interface: per-target scanning keeps the generator out of the consumer's scan (issue #105)"
+
+expected_outputs = [
+    "build/obj.m/src/mod.cppm.o",
+    "build/libm.a",
+    "build/obj.gen/src/gen.cpp.o",
+    "build/gen",
+    "build/generated.cpp",
+    "build/obj.use/generated.cpp.o",
+    "build/use",
+    # One scan scope per target, not one for the project. `gen` gets its own,
+    # which is exactly why it can produce an input to `use`'s.
+    "build/scan/cxx-modules/cxx_modules_codegen.m.dyndep",
+    "build/scan/cxx-modules/cxx_modules_codegen.gen.dyndep",
+    "build/scan/cxx-modules/cxx_modules_codegen.use.dyndep",
+]
+
+[toolchains]
+linux = ["gcc", "llvm"]
+darwin = ["llvm"]
+windows = ["msvc", "gcc"]
+
+[verify]
+# The generated source says `import m;` and returns `answer() - 42`, so a
+# zero exit proves the module was found and the ordering was discovered.
+commands = [{ run = "./build/use", expect_returncode = 0 }]
+
+[[rebuild]]
+description = "No rebuild when nothing changed"
+expect_no_work = true
+
+[[rebuild]]
+description = "Touching the module interface recompiles it and its consumer, leaving the generator alone"
+touch = "src/mod.cppm"
+expect_rebuild = [
+    "obj.m/src/mod.cppm.o",
+    "libm.a",
+    "obj.use/generated.cpp.o",
+    "use",
+]
+expect_no_rebuild = ["obj.gen/src/gen.cpp.o", "gen", "generated.cpp"]
+
+[[rebuild]]
+description = "Touching the generator rebuilds it, regenerates the source, and recompiles the consumer"
+touch = "src/gen.cpp"
+expect_rebuild = [
+    "obj.gen/src/gen.cpp.o",
+    "gen",
+    "generated.cpp",
+    "obj.use/generated.cpp.o",
+    "use",
+]
+# generated.cpp is written without write_if_different, so its mtime always
+# moves and the consumer always recompiles. The module library does not.
+expect_no_rebuild = ["obj.m/src/mod.cppm.o", "libm.a"]
+run = "./build/use"
+expect_returncode = 0
+
+[skip]
+# Named modules: MSVC scans natively (cl.exe), GCC via g++, clang via
+# clang-scan-deps. Gate per toolchain so an MSVC-only Windows host still runs.
+requires_cxx_modules = true
+generators = ["make", "xcode"]

@@ -221,6 +221,38 @@ class TestNodeDependencies:
         assert obj.explicit_deps == []
         assert obj.implicit_deps == [generated_header]
 
+    def test_order_after_is_a_separate_list(self):
+        """Order-only deps constrain ordering without asserting consumption."""
+        obj = FileNode("main.o")
+        generated = FileNode("gen.c")
+
+        obj.order_after(generated)
+
+        assert obj.explicit_deps == []
+        assert obj.implicit_deps == []
+        assert obj.order_only_deps == [generated]
+        assert obj.deps == [generated]
+
+    def test_order_after_yields_to_a_stronger_dep(self):
+        obj = FileNode("main.o")
+        source = FileNode("main.c")
+        generated = FileNode("gen.h")
+
+        obj.add_inputs([source])
+        obj.depends(generated)
+        obj.order_after(source, generated)
+
+        assert obj.order_only_deps == []
+
+    def test_order_after_deduplicates(self):
+        obj = FileNode("main.o")
+        generated = FileNode("gen.c")
+
+        obj.order_after(generated)
+        obj.order_after([generated])
+
+        assert obj.order_only_deps == [generated]
+
     def test_add_inputs_is_positional(self):
         obj = FileNode("main.o")
         source = FileNode("main.c")

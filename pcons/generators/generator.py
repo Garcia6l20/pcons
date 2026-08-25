@@ -225,6 +225,41 @@ class BaseGenerator:
 
         return nodes
 
+    def find_dyndep_use(self, project: Project) -> str | None:
+        """Path of the first node whose edge is governed by a ninja dyndep
+        file, or None if this project has no such edge.
+
+        Discovered dependencies (C++ modules, Fortran) are resolved during
+        the build, which only ninja can express. Generators that cannot say
+        that use this to refuse the project rather than write build files
+        that are quietly wrong.
+        """
+        for target in project.targets:
+            for node in self._get_target_build_nodes(target):
+                if (getattr(node, "_build_info", None) or {}).get("dyndep"):
+                    return str(node.path)
+        for env in project.environments:
+            for node in getattr(env, "_created_nodes", []):
+                if (getattr(node, "_build_info", None) or {}).get("dyndep"):
+                    return str(node.path)
+        return None
+
+    def _reject_dyndep(self, project: Project) -> None:
+        """Raise if this project needs dyndep, which only ninja can express.
+
+        Call before writing anything, so a project this generator cannot
+        build leaves no half-written build files behind.
+        """
+        node_path = self.find_dyndep_use(project)
+        if node_path is not None:
+            from pcons.core.errors import PconsError
+
+            raise PconsError(
+                f"{node_path} uses discovered dependencies (ninja dyndep), "
+                f"which the {self.name} generator cannot express; generate "
+                f"with ninja instead"
+            )
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.name!r})"
 

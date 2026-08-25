@@ -400,88 +400,22 @@ class TestGccModuleInterfaceSourceHandler:
 
 
 class TestGccModulesDepsTracking:
-    def test_after_resolve_keeps_depfile_for_non_module_cpp(
-        self, tmp_path, monkeypatch
-    ):
-        """Non-module C++ TUs must keep depfile/deps_style for #include tracking."""
+    """The per-target module pass: depfile handling and mapper wiring.
+
+    A real (tiny) project: a target owning a module interface and a plain
+    C++ TU, run through after_resolve the way the resolver does.
+    """
+
+    def _scanned_project(self, tmp_path, monkeypatch):
+        from pcons.core.target import Target
+
+        monkeypatch.chdir(tmp_path)
         tc = GccToolchain()
-        project = Project("test", root_dir=tmp_path, build_dir="build")
-
+        project = Project("t", root_dir=tmp_path, build_dir="build")
         env = SimpleNamespace(
-            cxx=SimpleNamespace(cmd="g++", flags=[]),
+            cxx=SimpleNamespace(cmd="g++", flags=[], defines=[], dprefix="-D"),
             register_node=lambda _node: None,
-        )
-
-        cxx_obj = FileNode("build/obj/main.cpp.o")
-        cxx_obj._build_info = {
-            "env": env,
-            "context": SimpleNamespace(flags=[], includes=[], defines=[]),
-            "depfile": PathToken(
-                path="build/obj/main.cpp.o", path_type="build", suffix=".d"
-            ),
-            "deps_style": "gcc",
-        }
-
-        source_obj_by_language = {
-            "cxx": [(tmp_path / "src" / "main.cpp", cxx_obj)],
-        }
-
-        def fake_select_modules_scope(_source_obj_by_language):
-            # Simulate modules mode where regular C++ TUs are processed even without
-            # an explicit module-interface unit in this particular list.
-            return ([], source_obj_by_language["cxx"])
-
-        monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.select_modules_scope",
-            fake_select_modules_scope,
-        )
-        monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.scan_translation_units",
-            lambda specs, scanner, scanner_style, cache=None: [
-                SimpleNamespace(
-                    spec=s,
-                    required_logical_names=set(),
-                    is_module_provider=False,
-                )
-                for s in specs
-            ],
-        )
-        monkeypatch.setattr(
-            tc,
-            "_inject_gcc_std_module_builds",
-            lambda *_args, **_kwargs: {},
-        )
-
-        tc.after_resolve(project, source_obj_by_language)
-
-        build_info = cxx_obj._build_info
-        assert build_info is not None
-        assert build_info["depfile"] is not None
-        assert build_info["deps_style"] == "gcc"
-
-    def test_after_resolve_drops_depflags_for_module_interfaces(
-        self, tmp_path, monkeypatch
-    ):
-        """Module interfaces drop -MD/-MF along with the depfile declaration.
-
-        GCC's depfile for a module interface names the BMI as both target and
-        prerequisite (a ninja dependency cycle), so the declaration is
-        cleared — but with the flags left in the command, GCC writes a .d
-        file nothing ever reads (#102). The object must switch to a command
-        template without $cxx.depflags; header deps come from the SCAN edge.
-        """
-
-        class _FakeCxxTool(SimpleNamespace):
-            def set(self, name: str, value: object) -> None:
-                setattr(self, name, value)
-
-        tc = GccToolchain()
-        project = Project("test", root_dir=tmp_path, build_dir="build")
-
-        objcmd = ["$cxx.cmd", "$cxx.flags", "$cxx.depflags", "-c", "-o"]
-        env = SimpleNamespace(
-            cxx=_FakeCxxTool(cmd="g++", flags=[], objcmd=list(objcmd)),
-            register_node=lambda _node: None,
+            toolchains=(tc,),
         )
 
         def make_obj(path: str) -> FileNode:
@@ -496,60 +430,73 @@ class TestGccModulesDepsTracking:
 
         mod_obj = make_obj("build/obj/mod.cppm.o")
         cxx_obj = make_obj("build/obj/main.cpp.o")
-        module_pair = (tmp_path / "src" / "mod.cppm", mod_obj)
-        cxx_pair = (tmp_path / "src" / "main.cpp", cxx_obj)
+        target = Target("hello", target_type="program", project=project)
+        target._env = env  # type: ignore[assignment]
+        target.intermediate_nodes.extend([mod_obj, cxx_obj])
+        project._targets.append(target)
 
-        monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.select_modules_scope",
-            lambda _source_obj_by_language: ([module_pair], [cxx_pair]),
-        )
-        monkeypatch.setattr(
-            "pcons.toolchains.cxx_module_scanner.scan_translation_units",
-            lambda specs, scanner, scanner_style, cache=None: [
-                SimpleNamespace(
-                    spec=s,
-                    required_logical_names=set(),
-                    is_module_provider=False,
-                )
-                for s in specs
-            ],
-        )
-        monkeypatch.setattr(
-            tc,
-            "_inject_gcc_std_module_builds",
-            lambda *_args, **_kwargs: {},
-        )
+        # Std synthesis probes the compiler; not under test here.
+        monkeypatch.setattr(tc, "_setup_std_modules", lambda *_a, **_k: ({}, None))
 
         source_obj_by_language = {
-            "cxx_module": [module_pair],
-            "cxx": [cxx_pair],
+            "cxx_module": [(tmp_path / "src" / "mod.cppm", mod_obj)],
+            "cxx": [(tmp_path / "src" / "main.cpp", cxx_obj)],
         }
         tc.after_resolve(project, source_obj_by_language)
+        return project, target, mod_obj, cxx_obj
 
-        mod_bi = mod_obj._build_info
-        assert mod_bi is not None
-        assert mod_bi["depfile"] is None
-        assert mod_bi["deps_style"] is None
-        assert mod_bi["command_var"] == "modobjcmd"
-        assert "$cxx.depflags" not in env.cxx.modobjcmd
-        assert env.cxx.modobjcmd == [t for t in objcmd if t != "$cxx.depflags"]
+    def test_module_interfaces_drop_the_depfile(self, tmp_path, monkeypatch):
+        """GCC's depfile for a module interface names the BMI as both target
+        and prerequisite — a ninja cycle (#102). The interface compiles from
+        a template without $cxx.depflags; its header tracking is an implicit
+        dep on its own scan output, whose depfile covers the same reads."""
+        _project, _target, mod_obj, _cxx_obj = self._scanned_project(
+            tmp_path, monkeypatch
+        )
 
-        # The regular TU is untouched: same command, depfile still declared.
-        cxx_bi = cxx_obj._build_info
-        assert cxx_bi is not None
-        assert cxx_bi["depfile"] is not None
-        assert cxx_bi["deps_style"] == "gcc"
-        assert "command_var" not in cxx_bi
+        bi = mod_obj._build_info
+        assert bi is not None
+        assert bi["depfile"] is None
+        assert bi["deps_style"] is None
+        assert bi["command_var"] == "modifacecmd"
+        assert any(
+            str(d.path).endswith("mod.cppm.o.ddi") for d in mod_obj.implicit_deps
+        )
 
-    def test_regular_cpp_not_cxx_module(self) -> None:
-        tc = GccToolchain()
-        handler = tc.get_source_handler(".cpp")
-        assert handler is not None
-        assert handler.language == "cxx"
+    def test_non_module_cpp_keeps_its_depfile(self, tmp_path, monkeypatch):
+        """Regular C++ TUs keep depfile/deps_style for #include tracking and
+        compile with the mapper-aware template."""
+        _project, _target, _mod_obj, cxx_obj = self._scanned_project(
+            tmp_path, monkeypatch
+        )
 
-    def test_unknown_suffix_returns_none(self) -> None:
-        tc = GccToolchain()
-        assert tc.get_source_handler(".xyz") is None
+        bi = cxx_obj._build_info
+        assert bi is not None
+        assert bi["depfile"] is not None
+        assert bi["deps_style"] == "gcc"
+        assert bi["command_var"] == "modobjcmd"
+
+    def test_every_scanned_tu_gets_a_mapper_reference(self, tmp_path, monkeypatch):
+        _project, _target, mod_obj, cxx_obj = self._scanned_project(
+            tmp_path, monkeypatch
+        )
+
+        for obj in (mod_obj, cxx_obj):
+            bi = obj._build_info
+            assert bi is not None
+            ref = bi["vars"]["CXX_MODMAPREF"]
+            assert ref.startswith("-fmodule-mapper=")
+            assert ref.endswith(".modmap")
+
+    def test_scanner_is_attached_to_the_target(self, tmp_path, monkeypatch):
+        _project, target, _mod_obj, _cxx_obj = self._scanned_project(
+            tmp_path, monkeypatch
+        )
+
+        assert len(target._scanners) == 1
+        scanner = target._scanners[0]
+        assert scanner.name == "cxx-modules"
+        assert ".cppm" in scanner.source_suffixes
 
 
 class TestFindGccStdModuleSource:

@@ -298,6 +298,8 @@ class CommandBuilder:
         cwd: str | Path | None = None,
         launcher: Sequence[str] | None = None,
         worker: Any = None,
+        depfile: str | None = None,
+        deps_style: str | None = None,
     ) -> Target:
         """Create a Command target.
 
@@ -317,6 +319,9 @@ class CommandBuilder:
             write_if_different: Restore identically-rewritten outputs.
             cwd: Directory to run the command in.
             launcher: Program to run this command behind, as tokens.
+            depfile: Suffix of the depfile the command writes beside its
+                output, e.g. ".d".
+            deps_style: How those dependencies arrive, "gcc" or "msvc".
 
         Returns:
             A new Target configured as a command.
@@ -332,6 +337,8 @@ class CommandBuilder:
             cwd=cwd,
             launcher=launcher,
             worker=worker,
+            depfile=depfile,
+            deps_style=deps_style,
         )
 
 

@@ -4,8 +4,6 @@ module dependency ordering."""
 
 from __future__ import annotations
 
-import json
-import logging
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -22,16 +20,53 @@ if TYPE_CHECKING:
     from pcons.core.builder import Builder
     from pcons.core.node import FileNode
     from pcons.core.project import Project
+    from pcons.core.target import Target
     from pcons.core.toolconfig import ToolConfig
     from pcons.tools.toolchain import SourceHandler  # noqa: F401
-
-logger = logging.getLogger(__name__)
 
 # Fortran source file extensions
 _FORTRAN_FREE_FORM = {".f90", ".f95", ".f03", ".f08", ".f18"}
 _FORTRAN_PREPROCESSED = {".F", ".F90"}
 _FORTRAN_FIXED_FORM = {".f", ".for", ".ftn"}
 FORTRAN_EXTENSIONS = _FORTRAN_FREE_FORM | _FORTRAN_PREPROCESSED | _FORTRAN_FIXED_FORM
+
+# Default module output/search directory, relative to the build directory.
+DEFAULT_MODDIR = "modules"
+
+
+def _moddir_of(env: object) -> str:
+    """The module directory an environment compiles Fortran into."""
+    fc = getattr(env, "fc", None)
+    return str(getattr(fc, "moddir", None) or DEFAULT_MODDIR)
+
+
+def _fortran_targets(
+    project: Project,
+    source_obj_by_language: dict[str, list[tuple[Path, FileNode]]],
+) -> list[Target]:
+    """Every target owning a Fortran object, in declaration order.
+
+    An object a Fortran compile writes may be a target's intermediate (a
+    program's or library's own compiles) or its output (a bare ``Object``
+    target). Either way it belongs to exactly one target — the dyndep
+    contract: one edge, one governing dyndep file.
+    """
+    fortran_objs = {id(obj) for _, obj in source_obj_by_language.get("fortran", [])}
+    if not fortran_objs:
+        return []
+
+    targets: list[Target] = []
+    claimed: set[int] = set()
+    for target in project.targets:
+        owned = [
+            node
+            for node in [*target.intermediate_nodes, *target.output_nodes]
+            if id(node) in fortran_objs and id(node) not in claimed
+        ]
+        if owned:
+            claimed.update(id(node) for node in owned)
+            targets.append(target)
+    return targets
 
 
 def _find_gfortran_libdir() -> str | None:
@@ -230,72 +265,79 @@ class GfortranToolchain(UnixToolchain):
         project: Project,
         source_obj_by_language: dict[str, list[tuple[Path, FileNode]]],
     ) -> None:
-        """Set up Ninja dyndep for Fortran module dependencies.
+        """Order Fortran compiles by module dependency, via the Scanner.
 
-        Writes a source-to-object manifest at configure time, adds a
-        build-time dyndep scanner step, and attaches the dyndep file to
-        each Fortran object node.
+        Configure records only static facts: which targets compile Fortran,
+        and each one's module directory. What a source provides (``MODULE``)
+        and requires (``USE``) is content, so it flows through a per-compile
+        scan edge and a per-target collate at build time — the same wiring
+        every scanner gets, so a generated ``.f90`` needs no special case.
+
+        Each provided ``.mod`` becomes a dyndep implicit output of the
+        compile that writes it (``-J <moddir>``), and dyndep outputs are
+        global to the build, so a module used across targets still resolves
+        as long as the using target depends on the providing one.
         """
-        fortran_source_obj_pairs = source_obj_by_language.get("fortran", [])
-        if not fortran_source_obj_pairs:
+        from pcons.core.scan import Scanner
+        from pcons.core.subst import NodeVar
+
+        targets = _fortran_targets(project, source_obj_by_language)
+        if not targets:
             return
 
+        # The compile writes modules with `-J $fc.moddir`; gfortran does not
+        # create that directory, and a consuming-only compile never has it as
+        # an output for ninja to create. Make it at configure time.
         build_dir = project.build_dir
-        manifest_path = build_dir / "fortran.manifest.json"
-        dyndep_path = build_dir / "fortran_modules.dyndep"
-        moddir = "modules"  # relative to build dir (ninja runs from build dir)
+        build_dir_fs = (
+            build_dir if build_dir.is_absolute() else project.root_dir / build_dir
+        )
+        for target in targets:
+            (build_dir_fs / _moddir_of(target._env)).mkdir(parents=True, exist_ok=True)
 
-        # Write manifest at configure time (read by scanner at build time)
-        manifest = [
-            {
-                "src": str(src.resolve()),
-                "obj": str(obj.path.relative_to(build_dir)),
-            }
-            for src, obj in fortran_source_obj_pairs
-        ]
-        build_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(manifest, indent=2))
-        logger.debug("Wrote Fortran module manifest to %s", manifest_path)
+        # gfortran leaves a .mod file untouched when recompiling produces an
+        # identical one — the very thing that keeps a cosmetic edit from
+        # cascading through every dependent. Without restat, ninja then sees
+        # that dyndep implicit output as forever older than its source and
+        # recompiles on every build; with it, the recorded mtime settles and
+        # dependents rebuild only when the module interface really changed.
+        for _src, obj in source_obj_by_language.get("fortran", []):
+            if obj._build_info is not None:
+                obj._build_info["restat"] = True
 
-        first_env = None
-        _, first_obj = fortran_source_obj_pairs[0]
-        build_info = getattr(first_obj, "_build_info", None)
-        if build_info:
-            first_env = build_info.get("env")
+        def scan_vars(
+            env: object, scanned: list[FileNode], governed: FileNode
+        ) -> dict[str, object]:
+            # Per-edge, so every scan shares one ninja rule even when two
+            # environments name different module directories.
+            return {"FC_MODDIR": _moddir_of(env)}
 
-        source_nodes = [project.node(src) for src, _ in fortran_source_obj_pairs]
-
-        dyndep_node = project.node(dyndep_path)
-        dyndep_node.add_inputs(source_nodes)
-
-        dyndep_node._build_info = {
-            "tool": "fc_scanner",
-            "command_var": "scancmd",
-            "description": "SCAN Fortran modules",
-            "sources": source_nodes,
-            "command": [
+        fortran_suffixes = tuple(sorted(FORTRAN_EXTENSIONS))
+        scanner = Scanner(
+            "fortran-modules",
+            source_suffixes=fortran_suffixes,
+            # Explicit markers, not "$SOURCE"/"$TARGET" strings: a marker
+            # parsed out of text can become a slice and flip the command
+            # into indexed-output mode, which a scan edge never defines.
+            scan_command=[
                 sys.executable,
                 "-m",
                 "pcons.toolchains.fortran_scanner",
-                "--manifest",
-                "fortran.manifest.json",
+                "--scan-one",
+                SourcePath(),
+                "--moddir",
+                NodeVar("FC_MODDIR"),
                 "--out",
-                "fortran_modules.dyndep",
-                "--mod-dir",
-                moddir,
+                TargetPath(),
             ],
-        }
-
-        # Register so the generator writes the dyndep build statement
-        if first_env is not None:
-            first_env.register_node(dyndep_node)
-
-        dyndep_rel = "fortran_modules.dyndep"
-        for _, obj_node in fortran_source_obj_pairs:
-            obj_build_info = getattr(obj_node, "_build_info", None)
-            if obj_build_info is not None:
-                obj_build_info["dyndep"] = dyndep_rel
-            obj_node.implicit_deps.append(dyndep_node)
+            info_suffix=".fscan.json",
+            scan_vars=scan_vars,
+            # A used module may come from a library outside this build
+            # (a system or prebuilt Fortran package), so an unresolved USE
+            # is not an error.
+            on_unresolved="ignore",
+        )
+        scanner.attach(*targets)
 
 
 # =============================================================================

@@ -11,7 +11,7 @@ import pytest
 from pcons.configure.platform import get_platform
 from pcons.core.builder import GenericCommandBuilder
 from pcons.core.environment import Environment
-from pcons.core.errors import MissingSourceError
+from pcons.core.errors import MissingSourceError, PconsError
 from pcons.core.node import FileNode
 from pcons.core.project import Project
 from pcons.core.subst import SourcePath, TargetPath
@@ -348,8 +348,141 @@ class TestEnvironmentCommand:
         assert result.name == "my_custom_name"
 
 
+class TestCommandDepfile:
+    """Tests for the depfile= / deps_style= arguments of Command."""
+
+    def test_depfile_lands_in_build_info(self, test_project):  # noqa: F811
+        """The depfile becomes a PathToken carrying the suffix."""
+        from pcons.core.subst import PathToken
+
+        env = Environment()
+
+        result = env.Command(
+            target="out.txt",
+            source="in.txt",
+            command="gen --deps $TARGET.d $SOURCE $TARGET",
+            depfile=".d",
+            deps_style="gcc",
+        )
+
+        build_info = result.output_nodes[0]._build_info
+        assert build_info["depfile"] == PathToken(
+            path=str(Path("build/out.txt")), path_type="build", suffix=".d"
+        )
+        assert build_info["deps_style"] == "gcc"
+
+    def test_deps_style_defaults_to_gcc(self, test_project):  # noqa: F811
+        """A depfile alone means a make-style depfile."""
+        env = Environment()
+
+        result = env.Command(
+            target="out.txt", source="in.txt", command="gen $SOURCE", depfile=".d"
+        )
+
+        assert result.output_nodes[0]._build_info["deps_style"] == "gcc"
+
+    def test_no_depfile_by_default(self, test_project):  # noqa: F811
+        """A command that declares nothing has no discovered dependencies."""
+        env = Environment()
+
+        result = env.Command(target="out.txt", source="in.txt", command="gen $SOURCE")
+
+        build_info = result.output_nodes[0]._build_info
+        assert build_info["depfile"] is None
+        assert build_info["deps_style"] is None
+
+    def test_msvc_deps_style(self, test_project):  # noqa: F811
+        """deps_style is passed through as given."""
+        env = Environment()
+
+        result = env.Command(
+            target="out.txt",
+            source="in.txt",
+            command="gen $SOURCE",
+            depfile=".d",
+            deps_style="msvc",
+        )
+
+        assert result.output_nodes[0]._build_info["deps_style"] == "msvc"
+
+    def test_depfile_with_multiple_targets_raises(self, test_project):  # noqa: F811
+        """The depfile is named after the output, so there may be only one."""
+        env = Environment()
+
+        with pytest.raises(PconsError, match="only one target"):
+            env.Command(
+                target=["out.c", "out.h"],
+                source="in.y",
+                command="gen $SOURCE",
+                depfile=".d",
+            )
+
+    def test_depfile_must_be_a_suffix(self, test_project):  # noqa: F811
+        """A depfile is a suffix appended to the output, not a path."""
+        env = Environment()
+
+        with pytest.raises(PconsError, match="depfile"):
+            env.Command(
+                target="out.txt",
+                source="in.txt",
+                command="gen $SOURCE",
+                depfile="out.d",
+            )
+
+    def test_unknown_deps_style_raises(self, test_project):  # noqa: F811
+        """Only ninja's two dependency styles are accepted."""
+        env = Environment()
+
+        with pytest.raises(PconsError, match="deps_style"):
+            env.Command(
+                target="out.txt",
+                source="in.txt",
+                command="gen $SOURCE",
+                depfile=".d",
+                deps_style="clang",
+            )
+
+    def test_deps_style_without_depfile_raises(self, test_project):  # noqa: F811
+        """deps_style says how a depfile arrives; without one it says nothing."""
+        env = Environment()
+
+        with pytest.raises(PconsError, match="needs depfile"):
+            env.Command(
+                target="out.txt",
+                source="in.txt",
+                command="gen $SOURCE",
+                deps_style="gcc",
+            )
+
+
 class TestGenericCommandNinja:
     """Tests for Ninja generation of generic commands."""
+
+    def test_depfile_in_rule(self, tmp_path):
+        """A command's depfile becomes depfile/deps on its ninja rule."""
+        from pcons.core.project import Project
+        from pcons.generators.ninja import NinjaGenerator
+
+        project = Project("test", root_dir=tmp_path, build_dir=".")
+        env = project.Environment()
+
+        env.Command(
+            target="out.txt",
+            source="in.txt",
+            command="gen --deps $TARGET.d $SOURCE $TARGET",
+            depfile=".d",
+        )
+
+        gen = NinjaGenerator()
+        gen.generate(project)
+        BaseGenerator._generate_pending(project)
+
+        content = (tmp_path / "build.ninja").read_text()
+        rule = next(
+            block for block in content.split("\n\n") if "rule command_" in block
+        )
+        assert "depfile = $out.d" in rule
+        assert "deps = gcc" in rule
 
     def test_generates_rule_for_command(self, tmp_path):
         """Ninja generator creates rule for command."""

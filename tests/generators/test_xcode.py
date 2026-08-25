@@ -3,6 +3,10 @@
 
 from pathlib import Path
 
+import pytest
+
+from pcons.core.errors import PconsError
+from pcons.core.node import FileNode
 from pcons.core.project import Project
 from pcons.core.target import Target
 from pcons.generators.generator import BaseGenerator
@@ -753,3 +757,40 @@ class TestXcodeImportIsolation:
         finally:
             sys.meta_path.remove(blocker)
             sys.modules.update(saved)
+
+
+class TestXcodeGeneratorDyndep:
+    """Xcode cannot express dependencies discovered during the build."""
+
+    def _project_using_dyndep(self, tmp_path):
+        project = Project("myapp", root_dir=tmp_path, build_dir=tmp_path)
+
+        target = Target("myapp", target_type="program")
+        output_node = FileNode(tmp_path / "obj" / "main.o")
+        output_node._build_info = {
+            "tool": "cxx",
+            "command_var": "cmdline",
+            "sources": [],
+            "dyndep": "cxx_modules.dyndep",
+        }
+        target.intermediate_nodes.append(output_node)
+        return project
+
+    def test_dyndep_is_refused(self, tmp_path):
+        project = self._project_using_dyndep(tmp_path)
+
+        gen = XcodeGenerator()
+        gen.generate(project)
+
+        with pytest.raises(PconsError, match="ninja"):
+            BaseGenerator._generate_pending(project)
+
+    def test_nothing_is_written_before_the_refusal(self, tmp_path):
+        project = self._project_using_dyndep(tmp_path)
+
+        gen = XcodeGenerator()
+        gen.generate(project)
+
+        with pytest.raises(PconsError):
+            BaseGenerator._generate_pending(project)
+        assert not (tmp_path / "myapp.xcodeproj").exists()

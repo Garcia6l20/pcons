@@ -7,6 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release adds a significant new feature: Scanners. These operate
+at runtime, largely replacing the configure-time scans we were using
+for C++ and Fortran modules. Those scans were good up to a point, but
+there are real-world cases they could not express. Runtime scanners
+allow fully dynamic fine-grain multi-phase builds including generated
+source files, with proper dependency management throughout. Most of
+this now requires the Ninja back-end because Makefiles don't have the
+machinery to support this kind of dynamic dependencies.
+
+### Added
+
+- **Scanners: runtime-discovered dependencies.** A `Scanner` declares
+  that some edges' real dependencies, their extra outputs, and even
+  parts of their command lines, come from their inputs' *content*. Users can now give
+  a command that scans one edge's sources and reports what it found; pcons
+  wires a scan edge per governed edge, one collate edge per target, and the
+  ninja `dyndep` file that reorders the build. Discovered flags reach a
+  command line through a per-edge args file collate writes at a path fixed at
+  configure time. Not C++-specific: there's an example at  `examples/70_scene_packs` 
+  that packs "scene" files that reference each other by  name. New doc at `docs/scanners.md`.
+
+- **`env.Command` takes `depfile=` and `deps_style=`.** A custom command can
+  now report the files it turned out to read, the way a compiler does:
+  `deps_style="gcc"` for a make-style depfile, `"msvc"` for `/showIncludes`
+  output.
+
+### Changed
+
+- **C++20 modules are rebuilt on the Scanner primitive, for clang, GCC and
+  MSVC.** Nothing is scanned at configure time any more. Each translation
+  unit gets its own scan edge (`clang-scan-deps`, `cl /scanDependencies`,
+  GCC's preprocess-only p1689 pass) and each target its own dyndep file; the
+  flags that depend on what the scan found — `-x c++-module`,
+  `-fmodule-output=`, `-fmodule-file=`, GCC's module mapper, `/interface` vs
+  `/internalPartition`, `/reference` — arrive in a modmap written during the
+  build. BMIs move to `<build_dir>/cxx_modules/<target>/<key>/`.
+
+- **Generated sources and C++ modules now work together, in both
+  directions.** A generated source that imports a module builds, and so does
+  a module interface that the build generates: a generated file is just an
+  input to its scan edge, so ninja runs the producer first. Neither needs
+  staging or a second configure pass. `examples/71_cxx_modules_codegen` and
+  `examples/72_cxx_modules_codegen_interface`. (#105)
+
+- **Scanned sources are no longer configure dependencies.** Adding an
+  `import` to one file rescans and recompiles that file. pcons doesn't
+  re-run, and the neighboring translation units aren't rebuilt.
+
+- **`import std;` is fully dynamic.** Configure describes the standard
+  library's module edges but wires nothing to them; the first translation
+  unit whose scan reports the import is what builds the BMI and adds the
+  object to the link. A project that never imports std builds and links
+  nothing extra, and a toolchain with no std module is only an error when
+  something actually imports it.
+
+  **Module names resolve through declared dependencies.** A target
+  sees the modules exported by the targets it links or depends on. A
+  cross-target Fortran `USE` without a `link()` or `add_dependency()`
+  no longer orders the build: the dependency carries the exports, the
+  content decides the order.
+
+- **Fortran module scanning moved onto the same primitive**, gaining per-file
+  scans, generated-source support, and `restat` — and `--moddir` now follows
+  `env.fc.moddir` instead of a hardcoded path.
+
+- **`env.cxx.modules` is now tri-state.** `None` (the default) is auto: an
+  extension-tagged module source opts its environment in. `True` also scans
+  module units written in `.cpp`/`.cc`. `False` disables scanning for the
+  environment, and warns if a module interface would then compile as plain
+  C++. `env.cxx.scan_deps` is honored too, overriding which scanner
+  executable is used.
+
+- **A scanned build declares `ninja_required_version = 1.11`,** where
+  cross-file dyndep references resolve reliably.
+
+### Fixed
+
+- **Fortran no longer rebuilds its whole module scope forever.** gfortran
+  leaves a `.mod` untouched when a recompile produces an identical one, and
+  with that `.mod` as a dyndep output ninja saw the edge as permanently out
+  of date — every build after any source edit recompiled everything.
+  `restat` on the Fortran compiles fixes it, and gives the right semantics
+  for free: a body-only edit recompiles one file, an interface change
+  propagates to the module's users.
+
+- **The Makefile and Xcode generators refuse a project that uses discovered
+  dependencies,** with an error naming the edge, instead of writing build
+  files that couldn't work. Only ninja can express `dyndep`.
+
+### Removed
+
+- **The configure-time C++ module machinery, including the scan cache**
+  (`pcons_scan_cache.json`). Scanning is a build edge now, with ninja's own
+  dependency tracking, so there is nothing to cache. As with any compile
+  edge, upgrading the compiler in place doesn't by itself force a rescan.
+
+- **A dependency's generated sources no longer recompile the whole
+  dependent.** When a target linked a library whose sources are generated,
+  every compile in that target listed the generated files as *implicit*
+  deps, so regenerating one recompiled translation units that never touched
+  it. They are now order-only (ninja `||`, make's `|`): the file still
+  exists before any compile runs, and the depfile decides which sources
+  actually included it. (#104)
+
+  **A static library's compiles now wait for a dependency's generated
+  headers.** Only programs and shared libraries ordered their compiles
+  after the non-link outputs of a linked dependency, so a
+  `StaticLibrary` or `ObjectLibrary` whose sources included a
+  generated header could compile before the header existed. Ordering a
+  compile is a property of compiling, not of linking, and now applies
+  to every target type.
+
 ## [0.28.0] - 2026-08-23
 
 ### Added
