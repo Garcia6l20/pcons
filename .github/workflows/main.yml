@@ -412,9 +412,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          
-          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+
+          # Add the PPA by hand rather than with add-apt-repository, which
+          # asks Launchpad's API for the signing key and gets an HTTP 500
+          # GPGKeyTemporarilyNotFoundError on the runners while serving the
+          # same key fine elsewhere. The keyserver is a separate service.
+          sudo install -d /etc/apt/keyrings
+          curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x60C317803A41BA51845E371A1E9377A2BA9EF27F" \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/ubuntu-toolchain-r.gpg
+          . /etc/os-release
+          echo "deb [signed-by=/etc/apt/keyrings/ubuntu-toolchain-r.gpg] https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${VERSION_CODENAME} main" \
+            | sudo tee /etc/apt/sources.list.d/ubuntu-toolchain-r.list
           sudo apt-get update
 
           sudo apt-get install -y gcc-15 g++-15
