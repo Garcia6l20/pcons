@@ -20,7 +20,15 @@ import os
 from collections.abc import Callable
 from functools import update_wrapper
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    TypeVar,
+    cast,
+    overload,
+)
 
 import click
 from click.core import ParameterSource
@@ -328,9 +336,51 @@ class UserCommand(_DeclaresDependencies, click.Command):
 class UserGroup(_DeclaresDependencies, click.Group):
     """The group form of `UserCommand`.
 
-    Verbs added with click's own ``@group.command()`` are plain click commands
-    and declare no dependencies; the group's own apply to every verb.
+    A verb added with click's own ``@group.command()`` is a `UserCommand` and
+    declares dependencies of its own. The group's apply to every verb on top of
+    those, so running one verb builds the group's targets and then the verb's.
+
+    Plain `UserCommand`, never `MergingCommand`, for the reason `UserCommand`
+    itself is. `type` is click's spelling for "this class", so a subgroup is a
+    `UserGroup` too and the rule holds at any depth.
     """
+
+    command_class = UserCommand
+    group_class = type
+
+    @overload
+    def command(self, __func: Callable[..., Any]) -> UserCommand: ...
+
+    @overload
+    def command(
+        self, *args: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], UserCommand]: ...
+
+    def command(self, *args: Any, **kwargs: Any) -> Any:
+        """click's own, narrowed to what `command_class` actually builds.
+
+        `command_class` is read at call time, so click's annotation can only
+        promise a `click.Command` and a caller loses `depends`. Passing ``cls``
+        replaces the class, and this annotation no longer describes what comes
+        back.
+        """
+        return super().command(*args, **kwargs)
+
+    @overload
+    def group(self, __func: Callable[..., Any]) -> UserGroup: ...
+
+    @overload
+    def group(
+        self, *args: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], UserGroup]: ...
+
+    def group(self, *args: Any, **kwargs: Any) -> Any:
+        """click's own, narrowed the way `command` above is.
+
+        `group_class` is `type`, so a subgroup is whatever class this one is.
+        `UserGroup` is what that promises.
+        """
+        return super().group(*args, **kwargs)
 
 
 class _GroupPathContext(PconsContext):
@@ -353,6 +403,16 @@ class DefaultCommand(MergingCommand):
     """The catch-all command, reporting the group's path instead of its own."""
 
     context_class = _GroupPathContext
+
+
+def value_taking_options(command: click.Command) -> set[str]:
+    """Spellings of *command*'s options whose value is a separate token."""
+    return {
+        opt
+        for param in command.params
+        if isinstance(param, click.Option) and not param.is_flag
+        for opt in (*param.opts, *param.secondary_opts)
+    }
 
 
 def _consumes_next_token(token: str, takes_value: set[str]) -> bool:
@@ -514,12 +574,7 @@ class PconsGroup(click.Group):
 
     def _takes_value_set(self) -> set[str]:
         """Spellings of the group's value-taking options."""
-        return {
-            opt
-            for param in self.params
-            if isinstance(param, click.Option) and not param.is_flag
-            for opt in (*param.opts, *param.secondary_opts)
-        }
+        return value_taking_options(self)
 
     def resolve_command(
         self, ctx: click.Context, args: list[str]
