@@ -1565,6 +1565,77 @@ Toolchain name strings resolve through finder functions, which are also availabl
 | `find_c_toolchain()` | Find C/C++ toolchain (LLVM, GCC, MSVC, etc.) |
 | `find_cuda_toolchain()` | Find CUDA toolchain (returns `None` if nvcc not found) |
 
+### One Library, Several Environments
+
+A firmware build needs two toolchains at once: the cross compiler that makes the
+image, and the host compiler for the generators and tests that run on the build
+machine. Some code belongs to both.
+
+Each environment owns where its targets are built:
+
+```python
+mcu = project.Environment(toolchain="gcc", name="mcu")
+mcu.build_prefix = "mcu"        # everything this environment writes
+mcu.archive_directory = "lib"   # its static libraries, below that
+
+host = project.Environment(toolchain="gcc", name="host")
+host.build_prefix = "host"
+host.archive_directory = "lib"
+```
+
+| Setting | What it moves |
+|---------|---------------|
+| `env.build_prefix` | Everything: link outputs, object files, `env.Command()` targets |
+| `env.runtime_directory` | Programs |
+| `env.library_directory` | Shared libraries |
+| `env.archive_directory` | Static libraries, and Windows import libraries |
+
+All four are relative to the build directory, and empty by default: a project
+that sets none of them sees no path change. The toolchain still decides the
+`lib` prefix and the `.a` / `.lib` suffix, which is why these are directories
+and `output_prefix` is not (that one replaces the toolchain's filename prefix).
+
+Because the two environments write in different directories, a target name can
+be repeated, and building one library for both is a plain Python function:
+
+```python
+def common_lib(env):
+    lib = project.StaticLibrary("common", env, sources=["src/common.c"])
+    lib.public.include_dirs.append(project.root_dir / "src")
+    return lib
+
+
+common = common_lib(mcu)        # build/mcu/lib/libcommon.a
+common_host = common_lib(host)  # build/host/lib/libcommon.a
+```
+
+Two targets may share a name only when both environments are named and the names
+differ. Otherwise the old error stands, and it says so.
+
+#### Naming one of them: `name@env`
+
+`@` selects the environment, `::` selects the project, and `@` binds tighter, so
+`sub::common@mcu` is target `common` of sub-project `sub`, built in `mcu`. It
+works wherever a target can be named:
+
+```python
+project.get_target("common@mcu")
+project.Default("app@host", "app@strict")
+app.link("common@mcu")          # a link string with '@' is a target, not '-lcommon@mcu'
+```
+
+```console
+$ pcons build common@mcu
+$ pcons explain common@mcu
+```
+
+An unqualified name that matches two targets raises and prints both spellings
+rather than picking one. A raw link token containing `@` is the one thing this
+takes away.
+
+See `examples/74_multi_env` for the smallest complete case, and
+`examples/73_bare_metal` for the cross-compiled one.
+
 ### Compiler Cache
 
 Speed up rebuilds by wrapping compile commands with [ccache](https://ccache.dev/) or [sccache](https://github.com/mozilla/sccache):

@@ -1223,10 +1223,13 @@ class Target:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Target):
             return NotImplemented
-        return self.qualified_name == other.qualified_name
+        return (
+            self.project.name == other.project.name
+            and self.env_qualified_name == other.env_qualified_name
+        )
 
     def __hash__(self) -> int:
-        return hash(self.qualified_name)
+        return hash((self.project.name, self.env_qualified_name))
 
 
 class ImportedTarget(Target):

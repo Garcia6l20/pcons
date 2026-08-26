@@ -653,6 +653,34 @@ libbar = env.StaticLibrary("bar", bar_sources, public_link_libs=[libfoo])
 app = env.Program("app", ["main.cpp"], link_libs=[libbar])
 ```
 
+### Target Identity and Build Placement
+> **Status: Implemented**
+
+A target is identified by its **name and its environment**. Two targets in one
+project may share a name when both environments are named and the names differ;
+anything else is still an error at declaration.
+
+Naming a target in full is `project::target@env`: `::` selects the project, `@`
+selects the environment, and `@` binds tighter, so `sub::common@mcu` is target
+`common` of sub-project `sub`. `target.name` stays the plain name;
+`target.env_qualified_name` carries the `name@env` spelling that messages, the
+CLI and completion print. A build tool only knows output paths, so the CLI
+translates the spelling into paths before dispatching.
+
+Placement belongs to the environment, never to the core or to a target:
+
+- `env.build_prefix` sits between the top-level build directory and the
+  `add_subdirectory()` offset, and covers everything the environment writes,
+  intermediates included. It folds into `env.build_dir`, so builders that anchor
+  on that variable (`env.Command()`, the Qt builders) follow with no change.
+- `env.runtime_directory`, `library_directory` and `archive_directory` place
+  final artifacts by kind below it. The mapping from `target_type` to setting is
+  core-level; what a `lib` prefix or a `.a` suffix looks like stays in the
+  toolchain.
+
+Two targets that still resolve to one output path are an error at resolve time,
+naming both.
+
 ### Target Resolution and Lazy Node Creation
 > **Status: Implemented**
 

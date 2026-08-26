@@ -1,0 +1,24 @@
+# Test configuration for the multi-environment example
+
+[test]
+description = "One project, two named environments: each owns its build directory, so one library and one program name serve both"
+
+# Paths are Unix-style; automatically adapted for Windows
+expected_outputs = [
+    "build/host/lib/libchecksum.a",
+    "build/host/obj.checksum/src/checksum.c.o",
+    "build/host/bin/app",
+    "build/strict/lib/libchecksum.a",
+    "build/strict/bin/app",
+]
+
+[verify]
+commands = [
+    # The same source, two environments, two results.
+    { run = "./build/host/bin/app", expect_stdout = "plain checksum 10" },
+    { run = "./build/strict/bin/app", expect_stdout = "strict checksum 10" },
+]
+
+[skip]
+# Xcode builds to its own paths.
+generators = ["xcode"]

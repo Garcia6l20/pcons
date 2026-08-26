@@ -301,10 +301,11 @@ def generate_project_builder_stubs() -> str:
 _ENVIRONMENT_VAR_TYPES: tuple[tuple[str, str], ...] = (
     ("build_dir", "Path"),
     ("variant", "str"),
-    ("build_prefix", "Path | None"),
-    ("runtime_directory", "Path | None"),
-    ("library_directory", "Path | None"),
-    ("archive_directory", "Path | None"),
+    # Assignable from either spelling; stored as a Path.
+    ("build_prefix", "str | Path | None"),
+    ("runtime_directory", "str | Path | None"),
+    ("library_directory", "str | Path | None"),
+    ("archive_directory", "str | Path | None"),
 )
 
 
