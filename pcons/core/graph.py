@@ -17,6 +17,11 @@ if TYPE_CHECKING:
     from pcons.core.target import Target
 
 
+def _target_spelling(target: Target) -> str:
+    """How a target is named in a cycle report."""
+    return f"{target.project.name}::{target.env_qualified_name}"
+
+
 def topological_sort_targets(targets: list[Target]) -> list[Target]:
     """Sort targets in dependency order (dependencies first) via Kahn's algorithm.
 
@@ -26,38 +31,40 @@ def topological_sort_targets(targets: list[Target]) -> list[Target]:
     if not targets:
         return []
 
-    # Build adjacency list and in-degree count. Keyed on qualified_name
-    # (project::target) rather than the bare name, since two targets in
-    # different (sub)projects may legitimately share a short name.
-    # target -> set of targets that depend on it
-    dependents: dict[str, set[str]] = {t.qualified_name: set() for t in targets}
-    # target -> number of dependencies not yet processed
-    in_degree: dict[str, int] = {t.qualified_name: 0 for t in targets}
-    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
+    # Keyed on identity: neither the bare name nor project::name is unique.
+    # Two (sub)projects may share a short name, and inside one project two
+    # targets may share a name when their environments differ.
+    dependents: dict[int, set[int]] = {id(t): set() for t in targets}
+    in_degree: dict[int, int] = {id(t): 0 for t in targets}
+    target_map: dict[int, Target] = {id(t): t for t in targets}
 
     for target in targets:
         for dep in target.dependencies:
-            if dep.qualified_name in dependents:
-                dependents[dep.qualified_name].add(target.qualified_name)
-                in_degree[target.qualified_name] += 1
+            if id(dep) in dependents:
+                dependents[id(dep)].add(id(target))
+                in_degree[id(target)] += 1
 
     # Start with targets that have no dependencies
-    queue = deque(name for name, count in in_degree.items() if count == 0)
+    queue = deque(key for key, count in in_degree.items() if count == 0)
     result: list[Target] = []
 
     while queue:
-        name = queue.popleft()
-        result.append(target_map[name])
+        key = queue.popleft()
+        result.append(target_map[key])
 
         # Reduce in-degree for all dependents
-        for dependent_name in dependents[name]:
-            in_degree[dependent_name] -= 1
-            if in_degree[dependent_name] == 0:
-                queue.append(dependent_name)
+        for dependent in dependents[key]:
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
 
     # If we didn't process all targets, there's a cycle
     if len(result) != len(targets):
-        cycle_nodes = [name for name, count in in_degree.items() if count > 0]
+        cycle_nodes = [
+            _target_spelling(target_map[key])
+            for key, count in in_degree.items()
+            if count > 0
+        ]
         raise DependencyCycleError(cycle_nodes)
 
     return result
@@ -70,13 +77,12 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
         List of cycles, each a list of target names; empty if none.
     """
     cycles: list[list[str]] = []
-    # Keyed on qualified_name (project::target): two targets in different
-    # (sub)projects may legitimately share a short name.
-    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
+    # Keyed on identity, like topological_sort_targets.
+    target_map: dict[int, Target] = {id(t): t for t in targets}
 
     # Colors: 0=white (unvisited), 1=gray (in progress), 2=black (done)
-    colors: dict[str, int] = {t.qualified_name: 0 for t in targets}
-    path: list[str] = []
+    colors: dict[int, int] = {id(t): 0 for t in targets}
+    path: list[int] = []
 
     def target_deps(target: Target) -> list[Target]:
         # Include implicit target deps from target.depends(other_target):
@@ -88,30 +94,33 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
             *target._implicit_target_deps_output_only,
         ]
 
-    def dfs(name: str) -> None:
-        colors[name] = 1  # Gray - in progress
-        path.append(name)
+    def dfs(key: int) -> None:
+        colors[key] = 1  # Gray - in progress
+        path.append(key)
 
-        target = target_map.get(name)
+        target = target_map.get(key)
         if target:
             for dep in target_deps(target):
-                dep_name = dep.qualified_name
-                if dep_name not in colors:
+                dep_key = id(dep)
+                if dep_key not in colors:
                     # External dependency, skip
                     continue
-                if colors[dep_name] == 1:
+                if colors[dep_key] == 1:
                     # Found a back edge - there's a cycle
-                    cycle_start = path.index(dep_name)
-                    cycles.append(path[cycle_start:] + [dep_name])
-                elif colors[dep_name] == 0:
-                    dfs(dep_name)
+                    cycle_start = path.index(dep_key)
+                    cycles.append(
+                        [_target_spelling(target_map[k]) for k in path[cycle_start:]]
+                        + [_target_spelling(target_map[dep_key])]
+                    )
+                elif colors[dep_key] == 0:
+                    dfs(dep_key)
 
         path.pop()
-        colors[name] = 2  # Black - done
+        colors[key] = 2  # Black - done
 
     for target in targets:
-        if colors[target.qualified_name] == 0:
-            dfs(target.qualified_name)
+        if colors[id(target)] == 0:
+            dfs(id(target))
 
     return cycles
 

@@ -8,13 +8,13 @@ and carries "usage requirements" that propagate to consumers (CMake-style).
 from __future__ import annotations
 
 import logging
-import re
 from collections import UserList
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
 
 from pcons.core.flags import merge_flags
+from pcons.core.names import validate_name
 from pcons.core.types import SourceSpec
 from pcons.util.source_location import SourceLocation, get_caller_location
 
@@ -316,23 +316,9 @@ class UsageRequirements(_UsageRequirementsStubs):
         return f"UsageRequirements({items_str})"
 
 
-# Characters not allowed in target names (would break ninja syntax or cause confusion).
-# Allow: word chars, dots, plus, minus, forward slash (for subdirectory-style names).
-_INVALID_TARGET_NAME_RE = re.compile(r"[^\w./+-]")
-
-
 def _validate_target_name(name: str) -> None:
     """Raise ValueError unless the target name is well-formed."""
-    if not name:
-        raise ValueError("Target name must not be empty.")
-    bad = _INVALID_TARGET_NAME_RE.findall(name)
-    if bad:
-        chars = "".join(sorted(set(bad)))
-        raise ValueError(
-            f"Target name {name!r} contains invalid characters: {chars!r}. "
-            f"Target names may contain letters, digits, underscores, dots, "
-            f"plus signs, hyphens, and forward slashes."
-        )
+    validate_name("Target", name)
 
 
 def split_qualified_name(
@@ -563,6 +549,18 @@ class Target:
     def qualified_name(self) -> str:
         """The qualified name, "<project>::<target>"."""
         return f"{self.project.name}::{self.name}"
+
+    @property
+    def env(self) -> Environment | None:
+        """The environment this target builds in."""
+        return self._env
+
+    @property
+    def env_qualified_name(self) -> str:
+        """``name@env`` when the environment is named, otherwise ``name``."""
+        env = self._env
+        env_name = env.name if env is not None else None
+        return f"{self.name}@{env_name}" if env_name else self.name
 
     @property
     def dependencies(self):

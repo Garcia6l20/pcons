@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from pcons.core.debug import trace, trace_value
+from pcons.core.names import validate_name
 from pcons.core.subst import Namespace, subst, to_shell_command
 from pcons.core.toolconfig import ToolConfig
 from pcons.core.vars import _record_variant
@@ -194,6 +195,8 @@ class Environment(_EnvironmentStubs):
         self._use_origins: dict[tuple[str, str], tuple[str, str]] = {}
         # Active only inside a set_*/apply_* fan-out (see _dedup_fanout)
         self._fanout_seen: set[Any] | None = None
+        if name is not None:
+            validate_name("Environment", name)
         self._name = name
         self.defined_at = defined_at or get_caller_location()
 
@@ -292,6 +295,10 @@ class Environment(_EnvironmentStubs):
             tools = self._get_tools()
             tools[name] = value
             value._env = self
+        elif name == "name":
+            if value is not None:
+                validate_name("Environment", value)
+            object.__setattr__(self, "_name", value)
         elif name in PLACEMENT_VARS:
             self._set_placement(name, value)
         elif name == "build_dir":
@@ -472,7 +479,12 @@ class Environment(_EnvironmentStubs):
 
     @name.setter
     def name(self, value: str | None) -> None:
-        """Set the environment name."""
+        """Set the environment name.
+
+        Never reached: ``__setattr__`` handles the assignment, because it
+        intercepts every attribute before the descriptor protocol runs. Kept
+        so the property reads as read-write to type checkers.
+        """
         object.__setattr__(self, "_name", value)
 
     def get(self, name: str, default: Any = None) -> Any:
@@ -536,6 +548,11 @@ class Environment(_EnvironmentStubs):
 
         # Start with cross-tool variables
         data: dict[str, Any] = dict(vars_dict)
+
+        # $name expands to the environment's name, which lives outside _vars.
+        env_name = object.__getattribute__(self, "_name")
+        if env_name:
+            data["name"] = env_name
 
         # Add tool namespaces
         for name, config in tools.items():

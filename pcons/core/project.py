@@ -151,6 +151,39 @@ def _emit_direct_run_notice() -> None:
     )
 
 
+def _refuse_duplicate(existing: Target, new: Target) -> None:
+    """Raise unless *existing* and *new* are told apart by their environments.
+
+    Two targets may share a name when both environments are named and the names
+    differ: they then write into different directories (Environment.build_prefix)
+    and ``name@env`` says which one is meant.
+    """
+    existing_env = existing.env
+    new_env = new.env
+    existing_name = existing_env.name if existing_env is not None else None
+    new_name = new_env.name if new_env is not None else None
+    where = f" (defined at {existing.defined_at})"
+
+    if existing_name and new_name and existing_env is not new_env:
+        if existing_name != new_name:
+            return
+        raise ValueError(
+            f"Target '{new.name}' already exists{where}: both build in an "
+            f"environment named '{new_name}'. Give the two environments "
+            f"different names."
+        )
+    if existing_env is not None and existing_env is new_env and existing_name:
+        raise ValueError(
+            f"Target '{new.name}' already exists in environment "
+            f"'{existing_name}'{where}."
+        )
+    raise ValueError(
+        f"Target '{new.name}' already exists{where}. Two targets may share a "
+        f"name only when their environments are named and different. Name the "
+        f"environment: project.Environment(..., name='host')."
+    )
+
+
 class Project(_ProjectBuilders):
     """Top-level container for a pcons build.
 
@@ -678,17 +711,12 @@ class Project(_ProjectBuilders):
         """Register a target; called only by Target.__init__.
 
         Raises:
-            ValueError: If a target with the same name already exists.
+            ValueError: If a target of that name is already registered and the
+                two cannot be told apart by their environments.
         """
-        if (
-            existing := self.get_target(
-                target.name, raise_if_missing=False, recursive=False
-            )
-        ) is not None:
-            raise ValueError(
-                f"Target '{target.name}' already exists "
-                f"(defined at {existing.defined_at})"
-            )
+        for existing in self._targets:
+            if existing.name == target.name:
+                _refuse_duplicate(existing, target)
         self._targets.append(target)
 
     @overload
@@ -711,19 +739,21 @@ class Project(_ProjectBuilders):
         """
 
         project, target_name = split_qualified_name(name)
-        if project is not None:
-            if project == self.name:
-                for target in self._targets:
-                    if target.name == target_name:
-                        return target
-                else:
-                    if raise_if_missing:
-                        raise KeyError(f"Target '{name}' not found")
-                    return None
-        else:
-            for target in self._targets:
-                if target.name == target_name:
-                    return target
+        if project is None or project == self.name:
+            matches = [t for t in self._targets if t.name == target_name]
+            if len(matches) > 1:
+                spellings = ", ".join(t.env_qualified_name for t in matches)
+                raise KeyError(
+                    f"Multiple targets named '{target_name}' in project "
+                    f"'{self.name}': {spellings}.\n"
+                    f"Name the environment: get_target('{matches[0].env_qualified_name}')."
+                )
+            if matches:
+                return matches[0]
+            if project is not None:
+                if raise_if_missing:
+                    raise KeyError(f"Target '{name}' not found")
+                return None
 
         if recursive:
             targets_found = []
