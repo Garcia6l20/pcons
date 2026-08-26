@@ -565,6 +565,13 @@ class TestTargetCompletion:
         wanted = "hello" if args == ["build"] else "elsewhere"
         assert _completions(args, "") == ["all", f"{wanted}{EXE_SUFFIX}"]
 
+    def test_no_build_dir_offers_no_env_spellings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing to read from, so nothing is offered and nothing raises."""
+        monkeypatch.setenv("PCONS_BUILD_DIR", "nowhere")
+        assert _completions(["build"], "app@") == []
+
     def test_the_build_dir_is_read_from_the_environment(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -580,6 +587,7 @@ class TestTargetCompletion:
         monkeypatch.delenv("PCONS_BUILD_DIR", raising=False)
         assert _completions(["build"], "") == []
         assert _completions([], "hel") == []
+        assert _completions(["build"], "app@") == []
 
     @pytest.mark.parametrize(
         "content",
@@ -749,3 +757,22 @@ class TestTheBuildDirBehindTheNames:
         ctx = click.Context(cli)
         ctx.params["build_dir"] = tmp_path
         assert _cached_names(ctx, "targets") == []
+
+    def test_no_build_dir_names_no_env_spellings(self) -> None:
+        from pcons._cli_click import _cached_env_spellings
+
+        ctx = click.Context(self._without_a_build_dir())
+        assert _cached_env_spellings(ctx) == []
+
+    def test_an_unreadable_cache_names_no_env_spellings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pcons._cli_click import _cached_env_spellings
+
+        def refuse(build_dir: Path) -> None:
+            raise OSError("cache unreadable")
+
+        monkeypatch.setattr("pcons.core.cache.BuildCache", refuse)
+        ctx = click.Context(cli)
+        ctx.params["build_dir"] = tmp_path
+        assert _cached_env_spellings(ctx) == []

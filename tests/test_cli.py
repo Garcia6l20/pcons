@@ -7371,6 +7371,99 @@ class TestEnvQualifiedTargets:
         }
 
 
+class TestEnvQualifiedFailures:
+    """What `pcons build name@env` does when it cannot answer."""
+
+    def test_a_target_with_no_output_is_an_error(
+        self, tmp_path, gcc_toolchain, caplog
+    ) -> None:
+        from pcons.cli import _route_targets
+        from pcons.core.project import Project
+
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        project.StaticLibrary("empty", env)
+        project.resolve()
+
+        with caplog.at_level(logging.ERROR):
+            assert _route_targets([project], ["empty@mcu"]) is None
+        assert "produces no output" in caplog.text
+
+    def test_one_failure_fails_the_whole_plan(
+        self, tmp_path, gcc_toolchain, caplog
+    ) -> None:
+        """Several top-level projects: a token that cannot be translated stops it."""
+        from pcons.cli import _route_targets
+        from pcons.core.project import Project
+
+        alpha = Project("alpha", root_dir=tmp_path, build_dir="build-a")
+        beta = Project("beta", root_dir=tmp_path, build_dir="build-b")
+        env = beta.Environment(toolchain=gcc_toolchain, name="mcu")
+        beta.StaticLibrary("empty", env)
+        beta.resolve()
+
+        with caplog.at_level(logging.ERROR):
+            assert _route_targets([alpha, beta], ["empty@mcu"]) is None
+
+    def test_the_cache_answers_when_nothing_regenerated(self, tmp_path) -> None:
+        from pcons.cli import _cached_env_lookup
+        from pcons.core.cache import BuildCache
+
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        BuildCache(build_dir).update(
+            {"env_targets": {"common@mcu": ["mcu/lib/libcommon.a"]}}
+        )
+
+        lookup = _cached_env_lookup(build_dir)
+        assert lookup("common@mcu") == ["mcu/lib/libcommon.a"]
+
+    def test_the_cache_names_what_it_knows(self, tmp_path, caplog) -> None:
+        from pcons.cli import _cached_env_lookup
+        from pcons.core.cache import BuildCache
+
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        BuildCache(build_dir).update(
+            {"env_targets": {"common@mcu": ["mcu/lib/libcommon.a"]}}
+        )
+
+        with caplog.at_level(logging.ERROR):
+            assert _cached_env_lookup(build_dir)("common@arm") is None
+        assert "known: common@mcu" in caplog.text
+
+    def test_a_build_dir_that_recorded_nothing(self, tmp_path, caplog) -> None:
+        from pcons.cli import _cached_env_lookup
+
+        with caplog.at_level(logging.ERROR):
+            assert _cached_env_lookup(tmp_path / "nowhere")("app@host") is None
+        assert "known:" not in caplog.text
+
+    def test_the_build_stops_before_running_the_tool(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """No regeneration ran, and the cache cannot name the target."""
+        import pcons.cli as cli_module
+
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / "build.ninja").write_text("# generated\n")
+        monkeypatch.setattr(cli_module, "_needs_generation", lambda *a, **kw: False)
+        monkeypatch.setattr(
+            cli_module,
+            "_run_build_tool",
+            lambda *a, **kw: pytest.fail("the build tool must not run"),
+        )
+
+        with caplog.at_level(logging.ERROR):
+            code, dirs = cli_module._build(
+                build_dir,
+                regenerate=lambda: (0, []),
+                targets=["nope@host"],
+            )
+        assert (code, dirs) == (1, [build_dir])
+
+
 class TestRouteTargets:
     """Named targets are routed to the sibling project that owns them."""
 

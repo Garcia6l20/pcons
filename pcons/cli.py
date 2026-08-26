@@ -1375,10 +1375,7 @@ def _cached_env_lookup(build_dir: Path) -> Callable[[str], list[str] | None]:
     from pcons.core.cache import BuildCache
 
     def lookup(token: str) -> list[str] | None:
-        try:
-            recorded = BuildCache(build_dir).get("env_targets")
-        except OSError:
-            recorded = None
+        recorded = BuildCache(build_dir).get("env_targets")
         paths = recorded.get(token) if isinstance(recorded, dict) else None
         if not paths:
             known = ", ".join(sorted(recorded)) if isinstance(recorded, dict) else ""

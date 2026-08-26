@@ -77,6 +77,17 @@ class TestLookup:
 
         assert [t.env_qualified_name for t in project.default_targets] == ["common@mcu"]
 
+    def test_a_qualified_name_this_project_lacks(self, tmp_path, gcc_toolchain):
+        """'p::gone' stops here: the qualifier already named the project."""
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        project.StaticLibrary("common", env)
+
+        with pytest.raises(KeyError, match="p::gone"):
+            project.get_target("p::gone")
+
+        assert project.get_target("p::gone", raise_if_missing=False) is None
+
 
 class TestLinkStrings:
     def test_a_spelling_links_the_target(self, tmp_path, source, gcc_toolchain):
