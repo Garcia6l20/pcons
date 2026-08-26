@@ -110,6 +110,32 @@ class TestLinkStrings:
 
         assert app.public.link_libs == ["m"]
 
+    def test_a_project_qualified_string_links_the_target(
+        self, tmp_path, source, gcc_toolchain
+    ):
+        """'::' names a target as much as '@' does, and never a link token."""
+        project = Project("p", root_dir=tmp_path)
+        env, _host = _two_envs(project, gcc_toolchain)
+        lib = project.StaticLibrary("common", env, sources=["src/common.c"])
+        (source / "main.c").write_text("int main(void) { return 0; }\n")
+        app = project.Program("app", env, sources=["src/main.c"])
+
+        app.link("p::common")
+
+        assert app.public.link_libs == [lib]
+
+    def test_an_ambiguous_string_raises_instead_of_linking(
+        self, tmp_path, source, gcc_toolchain
+    ):
+        """Silently emitting -lp::common is the failure this prevents."""
+        project = Project("p", root_dir=tmp_path)
+        for env in _two_envs(project, gcc_toolchain):
+            project.StaticLibrary("common", env, sources=["src/common.c"])
+        app = project.Program("app", project.get_target("common@mcu").env)
+
+        with pytest.raises(KeyError, match="Multiple targets named"):
+            app.link("p::common")
+
     def test_an_unknown_spelling_raises_at_that_line(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
         env = project.Environment(toolchain=gcc_toolchain, name="mcu")

@@ -696,10 +696,10 @@ class Target:
         Appends each argument to ``self.public.link_libs``: a ``Target``
         becomes a full dependency (its public headers, defines, flags, and
         transitive link libs propagate here), a ``str`` is a raw link token;
-        see :class:`UsageRequirements`. A string containing ``@`` is the one
-        exception: it names a target (``"common@mcu"``), and is looked up as
-        the call is made, so the target must already exist. Public
-        dependencies are re-exported
+        see :class:`UsageRequirements`. A string carrying ``@`` or ``::`` is the
+        one exception: it names a target (``"common@mcu"``, ``"sub::common"``),
+        and is looked up as the call is made, so the target must already exist
+        and an ambiguous name raises. Public dependencies are re-exported
         to this target's consumers, like CMake's ``target_link_libraries(...
         PUBLIC ...)``. Duplicates are ignored; argument order is preserved
         (link order can matter for static libraries).
@@ -714,7 +714,8 @@ class Target:
             TypeError: If an argument is not a Target or str. Pass lists
                 unpacked: ``target.link(*libs)``, not ``target.link(libs)``.
             ValueError: If a target links itself, or a library name is empty.
-            KeyError: If a ``name@env`` string names no target.
+            KeyError: If a string carrying ``@`` or ``::`` names no target, or
+                names more than one.
             RuntimeError: If called after the target has been resolved.
 
         Example:
@@ -779,7 +780,7 @@ class Target:
                 )
             if isinstance(lib, str) and not lib.strip():
                 raise ValueError(f"{method}() got an empty library name.")
-            if isinstance(lib, str) and "@" in lib:
+            if isinstance(lib, str) and ("@" in lib or "::" in lib):
                 lib = self.project.get_target(lib)
             if lib is self:
                 raise ValueError(f"Target '{self.name}' cannot link itself.")

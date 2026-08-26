@@ -134,12 +134,12 @@ def common_lib(environment):
 
 
 common = common_lib(env)
-common_host = common_lib(host_env)
+common_lib(host_env)
 
 checksum_test = project.Program(
     "checksum_test", host_env, sources=["tools/checksum_test.c"]
 )
-checksum_test.link(common_host)
+checksum_test.link("common@host")
 
 # Board support, archived with arm-none-eabi-ar.
 bsp = project.StaticLibrary("bsp", env, sources=["src/uart.c", "src/startup.c"])

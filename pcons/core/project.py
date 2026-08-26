@@ -769,10 +769,12 @@ class Project(_ProjectBuilders):
                 matches = in_env
             if len(matches) > 1:
                 spellings = ", ".join(t.qualified_name for t in matches)
+                # One line: KeyError renders its message with repr(), so a
+                # newline would reach the reader as a literal backslash-n.
                 raise KeyError(
                     f"Multiple targets named '{target_name}' in project "
-                    f"'{self.name}': {spellings}.\n"
-                    f"Name the environment: get_target('{matches[0].qualified_name}')."
+                    f"'{self.name}': {spellings}. Name the environment, "
+                    f"e.g. '{matches[0].qualified_name}'."
                 )
             if matches:
                 return matches[0]

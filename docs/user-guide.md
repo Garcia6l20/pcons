@@ -1621,7 +1621,7 @@ works wherever a target can be named:
 ```python
 project.get_target("common@mcu")
 project.Default("app@host", "app@strict")
-app.link("common@mcu")          # a link string with '@' is a target, not '-lcommon@mcu'
+app.link("common@mcu")          # a link string with '@' or '::' is a target
 ```
 
 ```console
@@ -1630,8 +1630,9 @@ $ pcons explain common@mcu
 ```
 
 An unqualified name that matches two targets raises and prints both spellings
-rather than picking one. A raw link token containing `@` is the one thing this
-takes away.
+rather than picking one, in `link()` as everywhere else. A raw link token
+containing `@` or `::` is the one thing this takes away, and no library is named
+that way.
 
 See `examples/74_multi_env` for the smallest complete case, and
 `examples/73_bare_metal` for the cross-compiled one.
