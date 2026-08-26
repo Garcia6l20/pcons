@@ -607,10 +607,15 @@ class Target:
 
         ``_subdir`` is the offset from the top-level root, so these anchor
         there rather than at the owning project's own directories (which
-        already include that offset).
+        already include that offset). The environment's ``build_prefix`` sits
+        between the two.
         """
         top = self.__project.top
-        return top.build_dir / self._subdir if self._subdir.parts else top.build_dir
+        base = top.build_dir
+        env = self._env
+        if env is not None and (prefix := env.get("build_prefix")):
+            base = base / prefix
+        return base / self._subdir if self._subdir.parts else base
 
     @property
     def source_dir(self) -> Path:

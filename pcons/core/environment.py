@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 
 
 #: ``$SOURCE`` or ``${SOURCE}``, but not ``$SOURCES`` or ``${SOURCES[0]}``.
+PLACEMENT_VARS = frozenset(
+    {"build_prefix", "runtime_directory", "library_directory", "archive_directory"}
+)
+
+_OUTPUT_DIRECTORY_VARS: dict[str, str] = {
+    "program": "runtime_directory",
+    "shared_library": "library_directory",
+    "static_library": "archive_directory",
+}
+
 _SINGULAR_SOURCE = re.compile(r"\$SOURCE(?![S\w])|\$\{SOURCE\}")
 
 
@@ -92,18 +102,31 @@ class Environment(_EnvironmentStubs):
         env.build_dir = 'build/release'
         env.variant = 'release'
 
+    An environment owns where its targets are built:
+        env.build_prefix = 'mcu'          # everything it writes, below build/
+        env.archive_directory = 'lib'     # static libraries, below that
+        env.library_directory = 'lib'     # shared libraries and Windows import libs
+        env.runtime_directory = 'bin'     # programs
+
     Environments can be cloned for variant builds:
         debug = env.clone()
         debug.cc.flags += ['-g']
 
     Attributes:
-        build_dir: Directory for build outputs.
+        build_dir: Directory for build outputs, with build_prefix applied.
+        build_prefix: Directory below the top-level build directory holding
+            everything this environment writes, outputs and intermediates alike.
+        runtime_directory: Directory for program outputs, below build_dir.
+        library_directory: Directory for shared library outputs, below build_dir.
+        archive_directory: Directory for static library outputs, and for Windows
+            import libraries, below build_dir.
         defined_at: Source location where this environment was created.
     """
 
     __slots__ = (
         "_tools",
         "_vars",
+        "_build_dir_base",
         "_project",
         "_toolchain",
         "_additional_toolchains",
@@ -148,7 +171,12 @@ class Environment(_EnvironmentStubs):
         self._vars: dict[str, Any] = {
             "build_dir": Path("build"),
             "variant": "default",
+            "build_prefix": None,
+            "runtime_directory": None,
+            "library_directory": None,
+            "archive_directory": None,
         }
+        self._build_dir_base = Path("build")
         from pcons.core.project import Project
 
         self._project = Project.current()
@@ -264,9 +292,71 @@ class Environment(_EnvironmentStubs):
             tools = self._get_tools()
             tools[name] = value
             value._env = self
+        elif name in PLACEMENT_VARS:
+            self._set_placement(name, value)
+        elif name == "build_dir":
+            object.__setattr__(self, "_build_dir_base", Path(value))
+            self._get_vars()["build_dir"] = self._effective_build_dir()
         else:
             vars_dict = self._get_vars()
             vars_dict[name] = value
+
+    def _set_placement(self, name: str, value: str | Path | None) -> None:
+        """Store one of the placement directories, rejecting what cannot be one."""
+        from pcons.core.errors import PconsError
+
+        if value is None or value == "":
+            self._get_vars()[name] = None
+        else:
+            path = Path(value)
+            if path.is_absolute():
+                raise PconsError(
+                    f"Environment.{name} must be relative to the build directory, "
+                    f"got the absolute path {str(path)!r}."
+                )
+            if ".." in path.parts:
+                raise PconsError(
+                    f"Environment.{name} must stay inside the build directory, "
+                    f"got {str(path)!r}."
+                )
+            self._get_vars()[name] = path
+        if name == "build_prefix":
+            self._get_vars()["build_dir"] = self._effective_build_dir()
+
+    def _effective_build_dir(self) -> Path:
+        """The build directory with ``build_prefix`` inserted.
+
+        The prefix goes between the top-level build directory and the owning
+        project's ``add_subdirectory`` offset, so a sub-project keeps its shape
+        inside the environment's slice instead of the offset being applied
+        twice.
+        """
+        base: Path = object.__getattribute__(self, "_build_dir_base")
+        prefix = self._get_vars().get("build_prefix")
+        if not prefix:
+            return base
+
+        project = object.__getattribute__(self, "_project")
+        top_build = project.top.build_dir if project is not None else None
+        if top_build is not None and not base.is_absolute():
+            head = top_build.parts
+            if base.parts[: len(head)] == head:
+                rest = base.parts[len(head) :]
+                return top_build / prefix / Path(*rest) if rest else top_build / prefix
+        return base / prefix
+
+    def output_directory_for(self, target_type: str | None) -> Path | None:
+        """The directory this environment places *target_type* outputs in.
+
+        Relative to the environment's build directory, or None to leave them at
+        its root. Object files and other intermediates are never placed here;
+        they follow ``build_prefix`` only.
+        """
+        attr = _OUTPUT_DIRECTORY_VARS.get(target_type or "")
+        if attr is None:
+            return None
+        directory: Path | None = self._get_vars().get(attr)
+        return directory
 
     def add_tool(self, name: str, config: ToolConfig | None = None) -> ToolConfig:
         """Add or get a tool namespace.

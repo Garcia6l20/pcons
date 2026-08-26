@@ -1178,9 +1178,9 @@ class Project(_ProjectBuilders):
                 envs = ""
                 if len(env_names) == 2:
                     envs = (
-                        " They build in different environments, so an "
-                        "environment-keyed output_prefix (e.g. "
-                        'f"{env.name}/") would keep them apart.'
+                        " They build in different environments, so giving each "
+                        "one a build_prefix (e.g. env.build_prefix = "
+                        f'"{sorted(env_names)[0]}") would keep them apart.'
                     )
                 raise PconsError(
                     f"targets {other.qualified_name!r} and "
