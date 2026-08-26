@@ -7310,6 +7310,67 @@ class TestACommandNameThatIsNotTheFirstArgument:
         assert self._resolved("generate", "FOO=bar") == ("generate", ["FOO=bar"])
 
 
+class TestEnvQualifiedTargets:
+    """`pcons build common@mcu`: pcons translates, the build tool never sees it."""
+
+    def _project(self, tmp_path, gcc_toolchain):
+        from pcons.core.project import Project
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "common.c").write_text("int f(void) { return 1; }\n")
+        project = Project("p", root_dir=tmp_path)
+        for name in ("mcu", "host"):
+            env = project.Environment(toolchain=gcc_toolchain, name=name)
+            env.build_prefix = name
+            env.archive_directory = "lib"
+            project.StaticLibrary("common", env, sources=["src/common.c"])
+        project.resolve()
+        return project
+
+    def test_a_spelling_becomes_its_output_path(self, tmp_path, gcc_toolchain) -> None:
+        from pcons.cli import _route_targets
+
+        project = self._project(tmp_path, gcc_toolchain)
+
+        assert _route_targets([project], ["common@mcu"]) == [
+            (project, ["mcu/lib/libcommon.a"])
+        ]
+
+    def test_other_tokens_pass_through(self, tmp_path, gcc_toolchain) -> None:
+        from pcons.cli import _route_targets
+
+        project = self._project(tmp_path, gcc_toolchain)
+
+        assert _route_targets([project], ["all", "mcu/lib/libcommon.a"]) == [
+            (project, ["all", "mcu/lib/libcommon.a"])
+        ]
+
+    def test_an_unknown_spelling_is_an_error(
+        self, tmp_path, gcc_toolchain, caplog
+    ) -> None:
+        from pcons.cli import _route_targets
+
+        project = self._project(tmp_path, gcc_toolchain)
+
+        with caplog.at_level(logging.ERROR):
+            assert _route_targets([project], ["common@arm"]) is None
+        assert "common@arm" in caplog.text
+
+    def test_the_recorded_paths_are_what_a_later_build_uses(
+        self, tmp_path, gcc_toolchain
+    ) -> None:
+        """A build that regenerates nothing has only the cache to go on."""
+        from pcons.cli import _env_target_paths
+
+        project = self._project(tmp_path, gcc_toolchain)
+
+        assert _env_target_paths(project) == {
+            "common@mcu": ["mcu/lib/libcommon.a"],
+            "common@host": ["host/lib/libcommon.a"],
+        }
+
+
 class TestRouteTargets:
     """Named targets are routed to the sibling project that owns them."""
 

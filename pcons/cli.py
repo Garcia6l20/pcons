@@ -372,6 +372,31 @@ def _buildable_names(project: Project) -> list[str]:
     return sorted(names)
 
 
+def _env_target_paths(project: Project) -> dict[str, list[str]]:
+    """Output paths per ``name@env`` spelling, as the build tool sees them.
+
+    A build tool knows output paths, never pcons target names, so a
+    ``common@mcu`` on the command line has to be translated before it is
+    handed over. Recorded here for the runs that build without regenerating,
+    which have no project objects to ask.
+    """
+    from pcons.core.node import FileNode
+
+    resolver = project._path_resolver
+    spellings: dict[str, list[str]] = {}
+    for target in project.targets:
+        if target.env is None or not target.env.name:
+            continue
+        paths = [
+            resolver.make_execution_relative(node.path)
+            for node in target.output_nodes
+            if isinstance(node, FileNode)
+        ]
+        if paths:
+            spellings[target.env_qualified_name] = paths
+    return spellings
+
+
 def _persist_run_settings(
     cache: BuildCache,
     variables: dict[str, str],
@@ -380,6 +405,7 @@ def _persist_run_settings(
     source_dir: str,
     targets: list[str] | None = None,
     variants: set[str] | None = None,
+    env_targets: dict[str, list[str]] | None = None,
 ) -> None:
     """Persist the settings resolved for this run into the build-dir cache.
 
@@ -414,6 +440,8 @@ def _persist_run_settings(
         updates["generator"] = generator
     if targets is not None:
         updates["targets"] = targets
+    if env_targets is not None:
+        updates["env_targets"] = env_targets
     if variants:
         recorded = cache.get("variants")
         recorded = recorded if isinstance(recorded, list) else []
@@ -452,6 +480,7 @@ def _persist_run_settings_to_projects(
             source_dir,
             targets=_buildable_names(project),
             variants=variants,
+            env_targets=_env_target_paths(project),
         )
         # The declared-command listing too: `pcons -B <this dir> run` reads
         # it from here, and must list the same commands the primary does.
@@ -723,6 +752,13 @@ def run_script(
                         if wants_generate()
                         else None,
                         variants=pcons.core.vars._seen_variant_names(),
+                        env_targets={
+                            spelling: paths
+                            for p in top_levels
+                            for spelling, paths in _env_target_paths(p).items()
+                        }
+                        if wants_generate()
+                        else None,
                     )
                     if wants_generate():
                         _persist_run_settings_to_projects(
@@ -1289,6 +1325,75 @@ def _no_build_described() -> int:
 _TARGETS_IN_EVERY_PROJECT = frozenset({"all", "test-build"})
 
 
+def _translate_env_tokens(
+    tokens: list[str], lookup: Callable[[str], list[str] | None]
+) -> list[str] | None:
+    """Replace every ``name@env`` token with the paths the build tool knows.
+
+    Other tokens pass through: a build tool knows names pcons does not, file
+    paths among them. An unknown spelling is an error here rather than a token
+    handed on for the build tool to reject with a worse message.
+    """
+    translated: list[str] = []
+    for token in tokens:
+        if "@" not in token:
+            translated.append(token)
+            continue
+        paths = lookup(token)
+        if not paths:
+            return None
+        translated.extend(paths)
+    return translated
+
+
+def _project_env_lookup(project: Project) -> Callable[[str], list[str] | None]:
+    """Resolve a ``name@env`` spelling against a project that has been resolved."""
+    from pcons.core.node import FileNode
+
+    def lookup(token: str) -> list[str] | None:
+        try:
+            target = project.get_target(token)
+        except (KeyError, ValueError) as exc:
+            logger.error("%s", exc.args[0] if exc.args else exc)
+            return None
+        resolver = project._path_resolver
+        paths = [
+            resolver.make_execution_relative(node.path)
+            for node in target.output_nodes
+            if isinstance(node, FileNode)
+        ]
+        if not paths:
+            logger.error("target '%s' produces no output to build", token)
+            return None
+        return paths
+
+    return lookup
+
+
+def _cached_env_lookup(build_dir: Path) -> Callable[[str], list[str] | None]:
+    """Resolve a ``name@env`` spelling from what the last generate recorded."""
+    from pcons.core.cache import BuildCache
+
+    def lookup(token: str) -> list[str] | None:
+        try:
+            recorded = BuildCache(build_dir).get("env_targets")
+        except OSError:
+            recorded = None
+        paths = recorded.get(token) if isinstance(recorded, dict) else None
+        if not paths:
+            known = ", ".join(sorted(recorded)) if isinstance(recorded, dict) else ""
+            logger.error(
+                "no target named '%s' in %s%s",
+                token,
+                build_dir,
+                f" (known: {known})" if known else "",
+            )
+            return None
+        return [str(path) for path in paths]
+
+    return lookup
+
+
 def _route_targets(
     projects: list[Project], targets: list[str] | None
 ) -> list[tuple[Project, list[str] | None]] | None:
@@ -1303,7 +1408,8 @@ def _route_targets(
         return [(p, None) for p in projects]
     if len(projects) == 1:
         # Pass through: ninja may know names pcons doesn't (file paths).
-        return [(projects[0], targets)]
+        tokens = _translate_env_tokens(targets, _project_env_lookup(projects[0]))
+        return None if tokens is None else [(projects[0], tokens)]
 
     from pcons.core.target import split_qualified_name
 
@@ -1372,7 +1478,15 @@ def _route_targets(
             return None
         routed[id(owners[0])].append(base if prefix is not None else token)
 
-    return [(p, routed[id(p)]) for p in projects if routed[id(p)]]
+    plan: list[tuple[Project, list[str] | None]] = []
+    for p in projects:
+        if not routed[id(p)]:
+            continue
+        tokens = _translate_env_tokens(routed[id(p)], _project_env_lookup(p))
+        if tokens is None:
+            return None
+        plan.append((p, tokens))
+    return plan
 
 
 def _forces_regeneration(
@@ -1447,6 +1561,11 @@ def _build(
     if not projects:
         # No regeneration ran: build the requested directory. With sibling
         # projects, -B scopes the build to the one owning that directory.
+        if targets:
+            translated = _translate_env_tokens(targets, _cached_env_lookup(build_dir))
+            if translated is None:
+                return 1, [build_dir]
+            targets = translated
         return _run_build_tool(
             build_dir,
             targets=targets,

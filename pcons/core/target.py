@@ -341,6 +341,30 @@ def split_qualified_name(
         return None, name
 
 
+def split_target_spec(spec: str) -> tuple[str | None, str, str | None]:
+    """Split ``"project::target@env"`` into (project, target, env).
+
+    ``@`` binds tighter than ``::``, so ``"sub::common@mcu"`` is target
+    ``common`` of project ``sub``, built in environment ``mcu``. Missing parts
+    come back as None.
+
+    Raises:
+        ValueError: On more than one ``@``, or an empty environment name.
+    """
+    project, target = split_qualified_name(spec)
+    parts = target.split("@")
+    if len(parts) == 1:
+        return project, target, None
+    if len(parts) > 2:
+        raise ValueError(f"Invalid target spec: {spec!r}. Too many '@' separators.")
+    name, env = parts
+    if not env:
+        raise ValueError(
+            f"Invalid target spec: {spec!r}. Name the environment after the '@'."
+        )
+    return project, name, env
+
+
 def is_qualified_name(name: str) -> bool:
     """Check if a name has a project qualifier ("project::target")."""
     project, _target = split_qualified_name(name, raise_on_invalid=False)
@@ -671,7 +695,10 @@ class Target:
         Appends each argument to ``self.public.link_libs``: a ``Target``
         becomes a full dependency (its public headers, defines, flags, and
         transitive link libs propagate here), a ``str`` is a raw link token;
-        see :class:`UsageRequirements`. Public dependencies are re-exported
+        see :class:`UsageRequirements`. A string containing ``@`` is the one
+        exception: it names a target (``"common@mcu"``), and is looked up as
+        the call is made, so the target must already exist. Public
+        dependencies are re-exported
         to this target's consumers, like CMake's ``target_link_libraries(...
         PUBLIC ...)``. Duplicates are ignored; argument order is preserved
         (link order can matter for static libraries).
@@ -686,6 +713,7 @@ class Target:
             TypeError: If an argument is not a Target or str. Pass lists
                 unpacked: ``target.link(*libs)``, not ``target.link(libs)``.
             ValueError: If a target links itself, or a library name is empty.
+            KeyError: If a ``name@env`` string names no target.
             RuntimeError: If called after the target has been resolved.
 
         Example:
@@ -750,6 +778,8 @@ class Target:
                 )
             if isinstance(lib, str) and not lib.strip():
                 raise ValueError(f"{method}() got an empty library name.")
+            if isinstance(lib, str) and "@" in lib:
+                lib = self.project.get_target(lib)
             if lib is self:
                 raise ValueError(f"Target '{self.name}' cannot link itself.")
             link_libs.append(

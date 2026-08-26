@@ -26,7 +26,7 @@ from pcons.core.graph import (
 from pcons.core.invocation import program_name, running_as_a_program
 from pcons.core.node import AliasNode, DirNode, FileNode, Node, PathRole
 from pcons.core.paths import PathResolver
-from pcons.core.target import Target, split_qualified_name
+from pcons.core.target import Target, split_target_spec
 from pcons.util.source_location import SourceLocation, get_caller_location
 
 logger = logging.getLogger(__name__)
@@ -732,15 +732,41 @@ class Project(_ProjectBuilders):
     def get_target(
         self, name: str, raise_if_missing: bool = True, recursive: bool = True
     ) -> Target | None:
-        """Get a target by (possibly qualified) name.
+        """Get a target by name, optionally qualified.
+
+        The full spelling is ``"project::target@env"``: ``::`` selects the
+        project, ``@`` the environment, and either may be left out. Two targets
+        may share a name when their environments differ, so an unqualified name
+        matching both raises rather than picking one.
 
         Returns None if not found and raise_if_missing is False;
         otherwise raises KeyError.
         """
 
-        project, target_name = split_qualified_name(name)
+        project, target_name, env_name = split_target_spec(name)
         if project is None or project == self.name:
             matches = [t for t in self._targets if t.name == target_name]
+            if env_name is not None:
+                in_env = [
+                    t for t in matches if t.env is not None and t.env.name == env_name
+                ]
+                if not in_env and matches:
+                    available = ", ".join(
+                        sorted(
+                            t.env.name
+                            for t in matches
+                            if t.env is not None and t.env.name
+                        )
+                    )
+                    where = (
+                        f" '{target_name}' is built in environments: {available}."
+                        if available
+                        else f" '{target_name}' has no named environment."
+                    )
+                    if raise_if_missing:
+                        raise KeyError(f"Target '{name}' not found.{where}")
+                    return None
+                matches = in_env
             if len(matches) > 1:
                 spellings = ", ".join(t.env_qualified_name for t in matches)
                 raise KeyError(

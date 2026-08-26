@@ -491,6 +491,34 @@ class TestTargetCompletion:
     def test_after_a_command_name(self, project: Path) -> None:
         assert _completions(["build"], "") == ["all", f"hello{EXE_SUFFIX}"]
 
+    def test_env_qualified_spellings_are_offered_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A named environment adds "name@env", the spelling pcons translates."""
+        from pcons.cli import run_script
+        from pcons.core.project import Project
+        from pcons.core.vars import _clear_cli_vars
+
+        root = tmp_path / "multi"
+        root.mkdir()
+        (root / "hello.c").write_text("int main(void) { return 0; }\n")
+        (root / "pcons-build.py").write_text(
+            "from pcons import Project\n"
+            "p = Project('demo')\n"
+            "for name in ('host', 'strict'):\n"
+            "    env = p.Environment(toolchain='c', name=name)\n"
+            "    env.build_prefix = name\n"
+            "    p.Program('hello', env, sources=['hello.c'])\n"
+        )
+        monkeypatch.delenv("PCONS_BUILD_DIR", raising=False)
+        _clear_cli_vars()
+        Project._clear_tree()
+        assert run_script(root / "pcons-build.py", root / "build")[0] == 0
+        monkeypatch.chdir(root)
+
+        offered = _completions(["build"], "hello@")
+        assert offered == ["hello@host", "hello@strict"]
+
     def test_a_prefix_filters(self, project: Path) -> None:
         assert _completions(["build"], "hel") == [f"hello{EXE_SUFFIX}"]
 
