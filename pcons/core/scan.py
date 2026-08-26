@@ -315,15 +315,6 @@ def _rule_ident(name: str) -> str:
     return name.replace("-", "_")
 
 
-def scope_spelling(target: Target) -> str:
-    """``project::name@env``, the spelling that identifies one target's scope.
-
-    Two targets may share a name when their environments differ, so the
-    environment belongs in every key a scope is filed under.
-    """
-    return f"{target.project.name}::{target.env_qualified_name}"
-
-
 def scope_id_for(target: Target) -> str:
     """The file-system identifier a target's scan scope uses.
 
@@ -331,7 +322,7 @@ def scope_id_for(target: Target) -> str:
     BMI directory, say) the same way the wiring pass names the manifest and
     dyndep files.
     """
-    return _SCOPE_ID_RE.sub("_", scope_spelling(target).replace("::", "."))
+    return _SCOPE_ID_RE.sub("_", target.qualified_name.replace("::", "."))
 
 
 class ScannerResolver:
@@ -366,7 +357,7 @@ class ScannerResolver:
 
     def _wire(self, target: Target, scanner: Scanner) -> None:
         project = self.project
-        key = (scanner.name, scope_spelling(target))
+        key = (scanner.name, target.qualified_name)
         if key in project._scan_scopes:
             existing = project._scan_scopes[key].scanner
             if existing is scanner:
@@ -475,7 +466,7 @@ class ScannerResolver:
         candidates = [
             scope
             for dep in target.transitive_dependencies()
-            if (scope := project._scan_scopes.get((scanner.name, scope_spelling(dep))))
+            if (scope := project._scan_scopes.get((scanner.name, dep.qualified_name)))
         ]
         candidates.extend(owner_scopes)
         import_scopes: list[ScanScope] = []
@@ -685,7 +676,7 @@ class ScannerResolver:
     def _scope_id(self, scanner: Scanner, target: Target) -> str:
         scope_id = scope_id_for(target)
         claim = (scanner.name, scope_id)
-        spelling = scope_spelling(target)
+        spelling = target.qualified_name
         owner = self._scope_ids.get(claim)
         if owner is not None and owner != spelling:
             raise PconsError(

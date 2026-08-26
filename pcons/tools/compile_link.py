@@ -559,13 +559,7 @@ class CompileLinkFactory:
         # Unlike per-source objects, grouped nodes are NOT shared between
         # targets: the node carries target identity (module name, output
         # path). The key only guards against double-resolving one target.
-        cache_key = (
-            target.env_qualified_name,
-            source_key,
-            tool_cmd,
-            effective_hash,
-            env,
-        )
+        cache_key = (target.qualified_name, source_key, tool_cmd, effective_hash, env)
         cached = self._grouped_object_cache.get(cache_key)
         if cached is not None:
             return cached

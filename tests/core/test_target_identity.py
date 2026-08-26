@@ -132,8 +132,7 @@ class TestQualifiedSpelling:
         lib = project.StaticLibrary("common", env)
 
         assert lib.env is env
-        assert lib.env_qualified_name == "common@mcu"
-        assert lib.qualified_name == "p::common"
+        assert lib.qualified_name == "p::common@mcu"
 
     def test_an_unnamed_environment_leaves_the_plain_name(
         self, tmp_path, gcc_toolchain
@@ -142,4 +141,4 @@ class TestQualifiedSpelling:
         env = project.Environment(toolchain=gcc_toolchain)
         lib = project.StaticLibrary("common", env)
 
-        assert lib.env_qualified_name == "common"
+        assert lib.qualified_name == "p::common"

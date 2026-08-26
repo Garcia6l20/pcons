@@ -17,11 +17,6 @@ if TYPE_CHECKING:
     from pcons.core.target import Target
 
 
-def _target_spelling(target: Target) -> str:
-    """How a target is named in a cycle report."""
-    return f"{target.project.name}::{target.env_qualified_name}"
-
-
 def topological_sort_targets(targets: list[Target]) -> list[Target]:
     """Sort targets in dependency order (dependencies first) via Kahn's algorithm.
 
@@ -61,7 +56,7 @@ def topological_sort_targets(targets: list[Target]) -> list[Target]:
     # If we didn't process all targets, there's a cycle
     if len(result) != len(targets):
         cycle_nodes = [
-            _target_spelling(target_map[key])
+            target_map[key].qualified_name
             for key, count in in_degree.items()
             if count > 0
         ]
@@ -109,8 +104,8 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
                     # Found a back edge - there's a cycle
                     cycle_start = path.index(dep_key)
                     cycles.append(
-                        [_target_spelling(target_map[k]) for k in path[cycle_start:]]
-                        + [_target_spelling(target_map[dep_key])]
+                        [target_map[k].qualified_name for k in path[cycle_start:]]
+                        + [target_map[dep_key].qualified_name]
                     )
                 elif colors[dep_key] == 0:
                     dfs(dep_key)

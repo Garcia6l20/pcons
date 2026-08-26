@@ -70,7 +70,7 @@ def _refuse_duplicate_names(project: Project) -> None:
         if other is not None:
             raise PconsError(
                 f"The Xcode generator cannot build targets "
-                f"'{other.env_qualified_name}' and '{target.env_qualified_name}': "
+                f"'{other.qualified_name}' and '{target.qualified_name}': "
                 f"it identifies a target by its name, and these share one. Give "
                 f"them different names, or generate ninja for this project."
             )

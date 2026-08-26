@@ -768,11 +768,11 @@ class Project(_ProjectBuilders):
                     return None
                 matches = in_env
             if len(matches) > 1:
-                spellings = ", ".join(t.env_qualified_name for t in matches)
+                spellings = ", ".join(t.qualified_name for t in matches)
                 raise KeyError(
                     f"Multiple targets named '{target_name}' in project "
                     f"'{self.name}': {spellings}.\n"
-                    f"Name the environment: get_target('{matches[0].env_qualified_name}')."
+                    f"Name the environment: get_target('{matches[0].qualified_name}')."
                 )
             if matches:
                 return matches[0]

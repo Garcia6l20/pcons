@@ -385,7 +385,8 @@ def _env_target_paths(project: Project) -> dict[str, list[str]]:
     resolver = project._path_resolver
     spellings: dict[str, list[str]] = {}
     for target in project.targets:
-        if target.env is None or not target.env.name:
+        env = target.env
+        if env is None or not env.name:
             continue
         paths = [
             resolver.make_execution_relative(node.path)
@@ -393,8 +394,33 @@ def _env_target_paths(project: Project) -> dict[str, list[str]]:
             if isinstance(node, FileNode)
         ]
         if paths:
-            spellings[target.env_qualified_name] = paths
+            spellings[f"{target.name}@{env.name}"] = paths
     return spellings
+
+
+def _merged_env_target_paths(projects: list[Project]) -> dict[str, list[str]]:
+    """The same, merged over sibling projects, under both spellings.
+
+    ``name@env`` is what one types in a single-project build, but two siblings
+    may each hold one, so the full ``project::name@env`` is recorded too, and
+    a short spelling that two projects claim is recorded for neither.
+    """
+    if len(projects) == 1:
+        return _env_target_paths(projects[0])
+
+    merged: dict[str, list[str]] = {}
+    contested: set[str] = set()
+    for project in projects:
+        short = _env_target_paths(project)
+        for spelling, paths in short.items():
+            merged[f"{project.name}::{spelling}"] = paths
+            if spelling in merged:
+                contested.add(spelling)
+            else:
+                merged[spelling] = paths
+    for spelling in contested:
+        merged.pop(spelling, None)
+    return merged
 
 
 def _persist_run_settings(
@@ -752,11 +778,7 @@ def run_script(
                         if wants_generate()
                         else None,
                         variants=pcons.core.vars._seen_variant_names(),
-                        env_targets={
-                            spelling: paths
-                            for p in top_levels
-                            for spelling, paths in _env_target_paths(p).items()
-                        }
+                        env_targets=_merged_env_target_paths(top_levels)
                         if wants_generate()
                         else None,
                     )

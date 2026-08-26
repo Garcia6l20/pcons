@@ -100,7 +100,6 @@ class MetadataGenerator(BaseGenerator):
         entry: dict[str, Any] = {
             "name": target.name,
             "qualified_name": target.qualified_name,
-            "env_qualified_name": target.env_qualified_name,
             "sub_directory": str(target._subdir) if target._subdir.parts else None,
             "type": target.target_type or "other",
             "is_default": target.name in default_target_names,

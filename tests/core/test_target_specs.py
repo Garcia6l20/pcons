@@ -75,7 +75,7 @@ class TestLookup:
         project.Default("common@mcu")
         project.resolve()
 
-        assert [t.env_qualified_name for t in project.default_targets] == ["common@mcu"]
+        assert [t.qualified_name for t in project.default_targets] == ["p::common@mcu"]
 
     def test_a_qualified_name_this_project_lacks(self, tmp_path, gcc_toolchain):
         """'p::gone' stops here: the qualifier already named the project."""

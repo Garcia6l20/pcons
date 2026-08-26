@@ -7464,6 +7464,60 @@ class TestEnvQualifiedFailures:
         assert (code, dirs) == (1, [build_dir])
 
 
+class TestMergedEnvTargets:
+    """Sibling projects share one cache, so a short spelling can be contested."""
+
+    def _project(self, name, tmp_path, gcc_toolchain, target_name):
+        from pcons.core.project import Project
+
+        src = tmp_path / "src"
+        src.mkdir(exist_ok=True)
+        (src / "common.c").write_text("int f(void) { return 1; }\n")
+        project = Project(name, root_dir=tmp_path, build_dir=f"build-{name}")
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        env.build_prefix = "mcu"
+        project.StaticLibrary(target_name, env, sources=["src/common.c"])
+        project.resolve()
+        return project
+
+    def test_both_spellings_are_recorded(self, tmp_path, gcc_toolchain) -> None:
+        from pcons.cli import _merged_env_target_paths
+
+        alpha = self._project("alpha", tmp_path, gcc_toolchain, "a")
+        beta = self._project("beta", tmp_path, gcc_toolchain, "b")
+
+        assert set(_merged_env_target_paths([alpha, beta])) == {
+            "a@mcu",
+            "alpha::a@mcu",
+            "b@mcu",
+            "beta::b@mcu",
+        }
+
+    def test_one_project_keeps_the_short_spellings(
+        self, tmp_path, gcc_toolchain
+    ) -> None:
+        """Nothing to contest, so nothing to qualify."""
+        from pcons.cli import _merged_env_target_paths
+
+        alpha = self._project("alpha", tmp_path, gcc_toolchain, "a")
+
+        assert set(_merged_env_target_paths([alpha])) == {"a@mcu"}
+
+    def test_a_contested_short_spelling_is_dropped(
+        self, tmp_path, gcc_toolchain
+    ) -> None:
+        """Two siblings claiming 'common@mcu': only the full spellings survive."""
+        from pcons.cli import _merged_env_target_paths
+
+        alpha = self._project("alpha", tmp_path, gcc_toolchain, "common")
+        beta = self._project("beta", tmp_path, gcc_toolchain, "common")
+
+        assert set(_merged_env_target_paths([alpha, beta])) == {
+            "alpha::common@mcu",
+            "beta::common@mcu",
+        }
+
+
 class TestRouteTargets:
     """Named targets are routed to the sibling project that owns them."""
 

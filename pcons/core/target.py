@@ -571,20 +571,21 @@ class Target:
 
     @property
     def qualified_name(self) -> str:
-        """The qualified name, "<project>::<target>"."""
-        return f"{self.project.name}::{self.name}"
+        """The full spelling, ``project::target@env``.
+
+        The ``@env`` half is there when the environment is named. An unnamed
+        environment cannot host a duplicate name and cannot be addressed, so
+        there is nothing to say about it.
+        """
+        env = self._env
+        env_name = env.name if env is not None else None
+        suffix = f"@{env_name}" if env_name else ""
+        return f"{self.project.name}::{self.name}{suffix}"
 
     @property
     def env(self) -> Environment | None:
         """The environment this target builds in."""
         return self._env
-
-    @property
-    def env_qualified_name(self) -> str:
-        """``name@env`` when the environment is named, otherwise ``name``."""
-        env = self._env
-        env_name = env.name if env is not None else None
-        return f"{self.name}@{env_name}" if env_name else self.name
 
     @property
     def dependencies(self):
@@ -1223,13 +1224,10 @@ class Target:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Target):
             return NotImplemented
-        return (
-            self.project.name == other.project.name
-            and self.env_qualified_name == other.env_qualified_name
-        )
+        return self.qualified_name == other.qualified_name
 
     def __hash__(self) -> int:
-        return hash((self.project.name, self.env_qualified_name))
+        return hash(self.qualified_name)
 
 
 class ImportedTarget(Target):

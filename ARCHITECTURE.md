@@ -662,10 +662,11 @@ anything else is still an error at declaration.
 
 Naming a target in full is `project::target@env`: `::` selects the project, `@`
 selects the environment, and `@` binds tighter, so `sub::common@mcu` is target
-`common` of sub-project `sub`. `target.name` stays the plain name;
-`target.env_qualified_name` carries the `name@env` spelling that messages, the
-CLI and completion print. A build tool only knows output paths, so the CLI
-translates the spelling into paths before dispatching.
+`common` of sub-project `sub`. Both halves are optional when what is left says
+which target is meant, and an ambiguous name is an error rather than a choice.
+`target.name` stays the plain name and `target.qualified_name` is the full
+spelling; equality, hashing and every message use it. A build tool only knows
+output paths, so the CLI translates a spelling into paths before dispatching.
 
 Placement belongs to the environment, never to the core or to a target:
 
