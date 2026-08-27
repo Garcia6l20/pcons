@@ -235,8 +235,9 @@ class UsageRequirements(_UsageRequirementsStubs):
                 # Replace contents in place so the existing list type's
                 # behavior (UniqueList dedup, ValidatedUniqueList.on_append)
                 # is preserved across assignment.
+                items = list(value)
                 existing.clear()
-                existing.extend(value)
+                existing.extend(items)
             else:
                 self._data[name] = value
 

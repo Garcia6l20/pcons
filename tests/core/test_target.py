@@ -135,6 +135,16 @@ class TestUsageRequirements:
         assert req._some_protected_stuff == ["NEW"]
         assert isinstance(req._some_protected_stuff, list)
 
+    def test_inplace_add_keeps_the_items(self):
+        """`+=` hands back the list being assigned, which must not be lost."""
+        req = UsageRequirements()
+        req.defines = UniqueList(["A"])
+
+        req.defines += ["B"]
+
+        assert req.defines == ["A", "B"]
+        assert isinstance(req.defines, UniqueList)
+
     def test_assignment_to_plain_list_replaces_object(self):
         """When the existing value is a plain list, assignment replaces it."""
         req = UsageRequirements(defines=["A"])
@@ -145,6 +155,42 @@ class TestUsageRequirements:
 
         # Plain lists are replaced outright (no clear/extend).
         assert req.defines is new_list
+
+
+class TestInPlaceAddOnTarget:
+    """`+=` on a target's usage requirements keeps what it adds."""
+
+    @pytest.mark.parametrize(
+        "field", ["defines", "include_dirs", "system_include_dirs", "link_dirs"]
+    )
+    @pytest.mark.parametrize("scope", ["public", "private"])
+    def test_unique_list_fields(self, field, scope, test_project):  # noqa: F811
+        reqs = getattr(Target("lib"), scope)
+
+        setattr(reqs, field, getattr(reqs, field).__iadd__(["one"]))
+        setattr(reqs, field, getattr(reqs, field).__iadd__(["two", "two"]))
+
+        assert list(getattr(reqs, field)) == ["one", "two"]
+
+    @pytest.mark.parametrize("scope", ["public", "private"])
+    def test_flag_fields(self, scope, test_project):  # noqa: F811
+        reqs = getattr(Target("app"), scope)
+
+        reqs.compile_flags += ["-O2"]
+        reqs.link_flags += ["-s"]
+
+        assert list(reqs.compile_flags) == ["-O2"]
+        assert list(reqs.link_flags) == ["-s"]
+
+    @pytest.mark.parametrize("scope", ["public", "private"])
+    def test_link_libs(self, scope, test_project):  # noqa: F811
+        app = Target("app")
+        lib = Target("lib")
+        reqs = getattr(app, scope)
+
+        reqs.link_libs += [lib, "m"]
+
+        assert list(reqs.link_libs) == [lib, "m"]
 
 
 class TestQualifiedName:
