@@ -15,9 +15,10 @@ What it shows:
 - `env.archive_directory` and `env.runtime_directory`, placing the artifacts by
   kind below it. The toolchain still decides "lib", ".a" and ".exe".
 - Two targets sharing a name, told apart by their environments.
-- `checksum@host`, the spelling that names one of them, accepted by `link()`,
-  by `project.Default` and by `pcons build`. A link string is a raw link token
-  unless it carries an environment, so `link("m")` still means `-lm`.
+- `checksum@host`, the spelling that names one of them, read by
+  `project.get_target`, by `project.Default` and by `pcons build`. A link
+  string stays a raw link token, so the target is passed as an object and
+  `link("m")` still means `-lm`.
 
 Not the same as example 66_multi_project, which is two top-level projects with
 two build directories and no edges between them, nor 34_multi_build_dir, which
@@ -47,6 +48,6 @@ for env in (host, strict):
 
 for env in (host, strict):
     app = project.Program("app", env, sources=["src/main.c"])
-    app.link(f"checksum@{env.name}")
+    app.link(project.get_target(f"checksum@{env.name}"))
 
 project.Default("app@host", "app@strict")

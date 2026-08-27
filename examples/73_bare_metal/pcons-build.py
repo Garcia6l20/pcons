@@ -20,7 +20,8 @@ What it shows:
    checksum the firmware speaks on the wire is compiled freestanding for the
    MCU and again with the host compiler, so a host program can test the
    algorithm before anything is flashed. Both are named "common": a target is
-   identified by its name and its environment, and "common@target" says which.
+   identified by its name and its environment, and "common@target" is how one
+   is named, to pcons or on the command line.
 6. A host-built generator producing a header the firmware includes.
 7. A linker script passed inside a -T flag, wrapped in PathToken so the
    generator relativizes it, plus an implicit dep so editing it relinks.
@@ -134,12 +135,12 @@ def common_lib(environment):
 
 
 common = common_lib(env)
-common_lib(host_env)
+common_host = common_lib(host_env)
 
 checksum_test = project.Program(
     "checksum_test", host_env, sources=["tools/checksum_test.c"]
 )
-checksum_test.link("common@host")
+checksum_test.link(common_host)
 
 # Board support, archived with arm-none-eabi-ar.
 bsp = project.StaticLibrary("bsp", env, sources=["src/uart.c", "src/startup.c"])

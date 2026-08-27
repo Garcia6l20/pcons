@@ -665,7 +665,9 @@ selects the environment, and `@` binds tighter, so `sub::common@mcu` is target
 `common` of sub-project `sub`. Both halves are optional when what is left says
 which target is meant, and an ambiguous name is an error rather than a choice.
 `target.name` stays the plain name and `target.qualified_name` is the full
-spelling; equality, hashing and every message use it. A build tool only knows
+spelling; equality, hashing and every message use it. A spelling is read by
+`get_target`, by `Default()` and by the CLI, never by `link()`, where a string
+is a raw link token. A build tool only knows
 output paths, so the CLI translates a spelling into paths before dispatching.
 
 Placement belongs to the environment, never to the core or to a target:
