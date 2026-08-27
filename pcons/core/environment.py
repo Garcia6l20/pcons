@@ -352,6 +352,27 @@ class Environment(_EnvironmentStubs):
                 return top_build / prefix / Path(*rest) if rest else top_build / prefix
         return base / prefix
 
+    def _refuse_taken_name(self, name: str) -> None:
+        """Raise if another environment of this project already answers to *name*.
+
+        The name is half of a target's identity, so two environments sharing one
+        would leave ``common@mcu`` meaning two things. Scoped to one project: a
+        sub-project may have its own ``host`` environment, since its targets are
+        spelled ``child::app@host``. Called by ``Project.Environment()``, which
+        is where an environment gets its name.
+        """
+        from pcons.core.errors import PconsError
+
+        project = self._project
+        for other in project.environments:
+            if other is not self and other.name == name:
+                raise PconsError(
+                    f"Project '{project.name}' already has an environment named "
+                    f"'{name}' (defined at {other.defined_at}). The name says "
+                    f"which environment a target was built in, so it has to be "
+                    f"unique in a project. Leave one unnamed, or name them apart."
+                )
+
     def output_directory_for(self, target_type: str | None) -> Path | None:
         """The directory this environment places *target_type* outputs in.
 

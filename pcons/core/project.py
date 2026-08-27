@@ -164,14 +164,8 @@ def _refuse_duplicate(existing: Target, new: Target) -> None:
     new_name = new_env.name if new_env is not None else None
     where = f" (defined at {existing.defined_at})"
 
-    if existing_name and new_name and existing_env is not new_env:
-        if existing_name != new_name:
-            return
-        raise ValueError(
-            f"Target '{new.name}' already exists{where}: both build in an "
-            f"environment named '{new_name}'. Give the two environments "
-            f"different names."
-        )
+    if existing_name and new_name and existing_name != new_name:
+        return
     if existing_env is not None and existing_env is new_env and existing_name:
         raise ValueError(
             f"Target '{new.name}' already exists in environment "
@@ -635,6 +629,8 @@ class Project(_ProjectBuilders):
             defined_at=get_caller_location(),
         )
         env._project = self
+        if name is not None:
+            env._refuse_taken_name(name)
 
         # Set any extra variables
         for key, value in kwargs.items():

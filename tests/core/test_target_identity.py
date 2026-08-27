@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pcons.core.environment import Environment
+from pcons.core.errors import PconsError
 from pcons.core.project import Project
 
 
@@ -85,15 +86,6 @@ class TestDuplicateNames:
         with pytest.raises(ValueError, match="named and different"):
             project.StaticLibrary("common", unnamed)
 
-    def test_two_environments_of_one_name_are_refused(self, tmp_path, gcc_toolchain):
-        project = Project("p", root_dir=tmp_path)
-        first = project.Environment(toolchain=gcc_toolchain, name="mcu")
-        second = project.Environment(toolchain=gcc_toolchain, name="mcu")
-        project.StaticLibrary("common", first)
-
-        with pytest.raises(ValueError, match="environment named 'mcu'"):
-            project.StaticLibrary("common", second)
-
     def test_colliding_outputs_still_raise(self, tmp_path, source, gcc_toolchain):
         """Duplicate names are legal because the directories differ, not the names."""
         project = Project("p", root_dir=tmp_path)
@@ -101,10 +93,39 @@ class TestDuplicateNames:
             env = project.Environment(toolchain=gcc_toolchain, name=name)
             project.StaticLibrary("common", env, sources=["src/common.c"])
 
-        from pcons.core.errors import PconsError
-
         with pytest.raises(PconsError, match="both build"):
             project.resolve()
+
+
+class TestEnvironmentNamesAreUnique:
+    """A name says which environment a target was built in, so it identifies one."""
+
+    def test_a_second_environment_of_that_name_is_refused(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        project.Environment(toolchain=gcc_toolchain, name="mcu")
+
+        with pytest.raises(PconsError, match="already has an environment named"):
+            project.Environment(toolchain=gcc_toolchain, name="mcu")
+
+    def test_unnamed_environments_are_unconstrained(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        project.Environment(toolchain=gcc_toolchain)
+        project.Environment(toolchain=gcc_toolchain)
+
+        assert [env.name for env in project.environments] == [None, None]
+
+    def test_a_sub_project_keeps_its_own_names(self, tmp_path, gcc_toolchain):
+        """'child::app@host' is not 'p::app@host', so both may have a host."""
+        project = Project("p", root_dir=tmp_path)
+        project.Environment(toolchain=gcc_toolchain, name="host")
+        (tmp_path / "child").mkdir()
+        with project._enter_subdir("child"):
+            child = Project("child", root_dir=tmp_path / "child")
+            child.Environment(toolchain=gcc_toolchain, name="host")
+
+        assert [env.name for env in child.environments] == ["host"]
 
 
 class TestLookup:
