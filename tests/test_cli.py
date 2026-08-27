@@ -7530,3 +7530,77 @@ class TestMultiProjectCli:
         result = _invoke("generate")
         assert result.exit_code == 1
         assert "needs an explicit build_dir" in result.stderr
+
+
+class TestBuildRegeneratesForANewVariable:
+    """`pcons build VAR=value` on fresh build files.
+
+    The staleness check compares mtimes, so a variable passed on this
+    invocation changes what the script would write without touching it.
+    Before, the assignment was parsed, accepted and never read.
+    """
+
+    SCRIPT = (
+        "from pathlib import Path\n"
+        "from pcons import Project, get_var\n"
+        "root = Path(__file__).parent\n"
+        "project = Project('v', root_dir=root)\n"
+        "env = project.Environment()\n"
+        "env.Command(target='out.txt', command=['echo', get_var('URL', 'default')],\n"
+        "            name='w')\n"
+    )
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pcons-build.py").write_text(self.SCRIPT)
+        monkeypatch.setattr("pcons.cli.run_ninja", lambda *a, **k: 0)
+        assert _invoke("generate").exit_code == 0
+        return tmp_path / "build" / "build.ninja"
+
+    def test_a_variable_forces_a_regeneration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ninja_file = self._project(tmp_path, monkeypatch)
+        assert "default" in ninja_file.read_text()
+
+        assert _invoke("build", "URL=from-cli").exit_code == 0
+
+        assert "from-cli" in ninja_file.read_text()
+
+    def test_the_value_persists_without_repeating_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ninja_file = self._project(tmp_path, monkeypatch)
+        assert _invoke("build", "URL=from-cli").exit_code == 0
+
+        assert _invoke("build").exit_code == 0
+
+        assert "from-cli" in ninja_file.read_text()
+
+    @pytest.mark.parametrize("flag", ["--reconfigure", "--fresh"])
+    def test_a_configure_flag_forces_a_regeneration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+    ) -> None:
+        """Both flags change what a regeneration does, so both need one to run."""
+        self._project(tmp_path, monkeypatch)
+        ran: list[str] = []
+        monkeypatch.setattr(
+            "pcons.cli._generate", lambda *a, **k: (ran.append(flag), (0, []))[1]
+        )
+
+        assert _invoke("build", flag).exit_code != 2
+
+        assert ran == [flag]
+
+    def test_a_plain_build_still_skips_the_script(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate is what keeps an incremental build off the script."""
+        self._project(tmp_path, monkeypatch)
+
+        def refuse(*a: object, **k: object) -> tuple[int, list[object]]:
+            raise AssertionError("regenerated with nothing to change")
+
+        monkeypatch.setattr("pcons.cli._generate", refuse)
+
+        assert _invoke("build").exit_code == 0

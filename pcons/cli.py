@@ -1389,6 +1389,7 @@ def _build(
     verbose: bool = False,
     ninja: str | None = None,
     variant: str | None = None,
+    force_regenerate: bool = False,
 ) -> tuple[int, list[Path]]:
     """Run one build, regenerating first if the build files are stale.
 
@@ -1402,12 +1403,19 @@ def _build(
     serialized, in script order, each named target routed to the project
     that owns it. A failure stops the run there.
 
+    *force_regenerate* regenerates even when the build files look fresh:
+    the staleness check compares mtimes, and a build variable or a configure
+    flag passed on this invocation changes what the script would write
+    without touching it.
+
     Returns:
         Tuple of (exit code, the directories built, in order). Not always
         the one asked for: a regeneration may run a script that picks its
         own.
     """
-    if _needs_generation(build_dir, build_script=str(script) if script else None):
+    if force_regenerate or _needs_generation(
+        build_dir, build_script=str(script) if script else None
+    ):
         found = _resolve_build_script(script)
         if found is not None and found.exists():
             logger.info("Build files missing or out of date, regenerating...")
@@ -2283,6 +2291,7 @@ def cli_build(
     """Build targets, generating first if the build files are stale."""
     script = Path(build_script) if build_script else None
     variables, targets = parse_variables(list(extra))
+    pending_force = bool(variables) or reconfigure or fresh
 
     # The projects from the last regeneration. A watch iteration whose build
     # files are fresh skips regeneration, and without these it would fall
@@ -2305,6 +2314,8 @@ def cli_build(
         return code, projects
 
     def build_once() -> tuple[int, list[Path]]:
+        nonlocal pending_force
+        force, pending_force = pending_force, False
         return _build(
             build_dir,
             regenerate=regenerate,
@@ -2315,6 +2326,7 @@ def cli_build(
             verbose=verbose,
             ninja=ninja,
             variant=variant,
+            force_regenerate=force,
         )
 
     if watch:
