@@ -809,11 +809,16 @@ class Target:
         """
         from pcons.core.node import FileNode, Node
 
+        interface = self.target_type == "interface"
+
         for item in items:
             if isinstance(item, Target):
                 if item is self:
                     raise ValueError(f"Target '{self.name}' cannot depend on itself.")
                 self._check_same_tree(item, "depend on")
+                if interface:
+                    self.add_dependency(item)
+                    continue
                 target_list = (
                     self._implicit_target_deps
                     if propagate
@@ -821,6 +826,19 @@ class Target:
                 )
                 if item not in target_list:
                     target_list.append(item)
+            elif interface:
+                from pcons.core.errors import PconsError
+
+                raise PconsError(
+                    f"Interface target '{self.name}' cannot depend on the file "
+                    f"'{item}': it builds nothing, so there is no build step to "
+                    "order behind that file, and a file carries no target for "
+                    "consumers to inherit.\n"
+                    "  Depend on the target that produces it instead, so every "
+                    f"consumer of '{self.name}' inherits the ordering.\n"
+                    "  Or declare it on the target that reads the file: "
+                    "consumer.depends(path)."
+                )
             else:
                 file_list = (
                     self._extra_implicit_deps
