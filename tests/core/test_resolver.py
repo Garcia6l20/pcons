@@ -223,6 +223,131 @@ class TestResolverHeaderOnlyLibrary:
         assert "headers/include" in includes_normalized
         assert "HEADER_LIB_API" in context.defines
 
+    def test_depends_on_header_only_library_forwards_to_consumers(
+        self, tmp_path, gcc_toolchain
+    ):
+        """depends() on a HeaderOnlyLibrary must not be silently dropped (#111).
+
+        An interface target builds nothing of its own, so the ordering it
+        declares can only hold in whoever consumes it - here, an app that
+        links the interface library must wait on the generator the library
+        itself declared a dependency on.
+        """
+        src_file = tmp_path / "main.c"
+        src_file.write_text("int main() { return 0; }")
+
+        project = Project("test", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        env.add_tool("cc")
+        env.cc.objcmd = "gcc -c $SOURCE -o $TARGET"
+
+        gen = env.Command(name="gen", target="gen/gen.h", command="touch $TARGET")
+
+        header_lib = project.HeaderOnlyLibrary("headers")
+        header_lib.depends(gen)
+
+        app = project.Program("myapp", env, sources=[str(src_file)])
+        app.private.link_libs.append(header_lib)
+
+        project.resolve()
+
+        # The interface target still builds nothing - it never becomes a
+        # node the generator could attach to.
+        assert header_lib.intermediate_nodes == []
+        assert header_lib.output_nodes == []
+
+        # The dependency lands on the consumer's compile instead.
+        app_obj = app.intermediate_nodes[0]
+        assert gen.output_nodes[0] in app_obj.implicit_deps
+
+    def test_unresolved_compiled_dependency_is_not_treated_as_interface(
+        self, tmp_path, gcc_toolchain
+    ):
+        """A compiled target reached only through a non-link dependency edge
+        can still be unresolved when its consumer is resolved (that edge
+        isn't part of the topological sort), and its node lists are then
+        empty for the same reason an interface target's always are: nothing
+        has run yet, not because it builds nothing. The forwarding loop has
+        to resolve it first and check its nodes afterwards, or it treats an
+        ordinary compiled target as if it were interface-only and forwards
+        its dependency onto the consumer instead of leaving it on its own
+        compile step, where the dependency actually belongs.
+        """
+        src_file = tmp_path / "main.c"
+        src_file.write_text("int main() { return 0; }")
+        lib_src = tmp_path / "lib.c"
+        lib_src.write_text("int helper(void) { return 0; }")
+        generated = tmp_path / "generated.h"
+        generated.write_text("")
+
+        project = Project("test", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        env.add_tool("cc")
+        env.cc.objcmd = "gcc -c $SOURCE -o $TARGET"
+
+        gen = env.Command(name="gen", target="gen/gen.h", command="touch $TARGET")
+
+        tool = project.StaticLibrary("tool", env, sources=[str(lib_src)])
+        tool.depends(gen)
+
+        app = project.Program("myapp", env, sources=[str(src_file)])
+        app.add_dependency(tool)
+
+        resolver = Resolver(project)
+        assert not tool._resolved
+        resolver._resolve_target(app)
+
+        # Resolving the consumer resolved the still-unresolved compiled
+        # dependency on demand, and gen's dependency stayed on tool's own
+        # compile step rather than getting forwarded onto app's.
+        assert tool._resolved
+        tool_obj = tool.intermediate_nodes[0]
+        assert gen.output_nodes[0] in tool_obj.implicit_deps
+
+        app_obj = app.intermediate_nodes[0]
+        assert gen.output_nodes[0] not in app_obj.implicit_deps
+
+    def test_interface_target_file_dep_forwards_and_resolves_on_demand(
+        self, tmp_path, gcc_toolchain
+    ):
+        """Same forwarding (#111), exercised for the other _resolve_target
+        forwarding path: a file-level depends() (_extra_implicit_deps, set
+        when the depends() argument isn't a Target) rather than a target
+        dep, and with the interface target still unresolved when its
+        consumer is resolved.
+
+        The normal project.resolve() loop always resolves a link_lib before
+        its consumer, so that second case can only be observed by calling
+        the resolver's per-target entry point directly, the same way
+        TestResolverImplicitDependsCycle does above.
+        """
+        src_file = tmp_path / "main.c"
+        src_file.write_text("int main() { return 0; }")
+        generated = tmp_path / "generated.h"
+        generated.write_text("")
+
+        project = Project("test", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        env.add_tool("cc")
+        env.cc.objcmd = "gcc -c $SOURCE -o $TARGET"
+
+        header_lib = project.HeaderOnlyLibrary("headers")
+        header_lib.depends(str(generated))
+        generated_node = project.node(str(generated))
+
+        app = project.Program("myapp", env, sources=[str(src_file)])
+        app.private.link_libs.append(header_lib)
+
+        resolver = Resolver(project)
+        assert not header_lib._resolved
+        resolver._resolve_target(app)
+
+        # Resolving the consumer resolved the still-unresolved interface
+        # target on demand, and its file-level dep landed on the consumer.
+        assert header_lib._resolved
+        app_obj = app.intermediate_nodes[0]
+        assert generated_node in app_obj.implicit_deps
+
 
 class TestResolverObjectCaching:
     def test_object_caching_same_flags(self, tmp_path, gcc_toolchain):
