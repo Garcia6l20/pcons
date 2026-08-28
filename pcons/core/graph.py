@@ -10,11 +10,33 @@ from __future__ import annotations
 from collections import deque
 from typing import TYPE_CHECKING
 
-from pcons.core.errors import DependencyCycleError
+from pcons.core.errors import DependencyCycleError, DuplicateTargetError
 
 if TYPE_CHECKING:
     from pcons.core.node import Node
     from pcons.core.target import Target
+
+
+def _index(targets: list[Target]) -> dict[str, Target]:
+    """Targets by qualified name, which is what the graph walks key on.
+
+    Args:
+        targets: The targets to index.
+
+    Returns:
+        The targets, keyed by ``qualified_name``.
+
+    Raises:
+        DuplicateTargetError: Two targets answer to one qualified name. The
+            walks cannot tell them apart, and folding them together would turn
+            a duplicate into a bogus dependency cycle.
+    """
+    indexed: dict[str, Target] = {}
+    for target in targets:
+        first = indexed.setdefault(target.qualified_name, target)
+        if first is not target:
+            raise DuplicateTargetError(target.qualified_name, first, target)
+    return indexed
 
 
 def topological_sort_targets(targets: list[Target]) -> list[Target]:
@@ -22,11 +44,12 @@ def topological_sort_targets(targets: list[Target]) -> list[Target]:
 
     Raises:
         DependencyCycleError: If there's a cycle in the dependency graph.
+        DuplicateTargetError: If two targets share a qualified name.
     """
     if not targets:
         return []
 
-    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
+    target_map = _index(targets)
     dependents: dict[str, set[str]] = {name: set() for name in target_map}
     in_degree: dict[str, int] = dict.fromkeys(target_map, 0)
 
@@ -63,9 +86,12 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
 
     Returns:
         List of cycles, each a list of target names; empty if none.
+
+    Raises:
+        DuplicateTargetError: If two targets share a qualified name.
     """
     cycles: list[list[str]] = []
-    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
+    target_map = _index(targets)
 
     # Colors: 0=white (unvisited), 1=gray (in progress), 2=black (done)
     colors: dict[str, int] = dict.fromkeys(target_map, 0)

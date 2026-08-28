@@ -3,7 +3,7 @@
 
 import pytest
 
-from pcons.core.errors import DependencyCycleError
+from pcons.core.errors import DependencyCycleError, DuplicateTargetError
 from pcons.core.graph import (
     collect_all_nodes,
     collect_build_order,
@@ -269,6 +269,42 @@ class TestSameShortNameAcrossSubprojects:
 
         assert util1_out in nodes
         assert util2_out in nodes
+
+
+class TestOneQualifiedNameForTwoTargets:
+    """The walks key on `qualified_name`, so a repeated one is refused.
+
+    Folding the two together would leave the sort short of targets and report
+    that shortfall as a dependency cycle with no members.
+    """
+
+    def _two_of_a_kind(self, tmp_path, gcc_toolchain):
+        """One subdirectory included twice: two projects, one name each."""
+        top = Project("t", root_dir=tmp_path)
+        env = top.Environment(toolchain=gcc_toolchain, name="host")
+        made = []
+        for _ in range(2):
+            with top._enter_subdir("sub"):
+                child = Project("child", root_dir=tmp_path / "sub")
+                made.append(child.StaticLibrary("common", env))
+        return made[0], made[1]
+
+    def test_the_sort_names_both_definition_sites(self, tmp_path, gcc_toolchain):
+        first, second = self._two_of_a_kind(tmp_path, gcc_toolchain)
+
+        with pytest.raises(DuplicateTargetError) as excinfo:
+            topological_sort_targets([first, second])
+
+        message = str(excinfo.value)
+        assert "child::common@host" in message
+        assert str(first.defined_at) in message
+        assert str(second.defined_at) in message
+
+    def test_cycle_detection_refuses_them_too(self, tmp_path, gcc_toolchain):
+        first, second = self._two_of_a_kind(tmp_path, gcc_toolchain)
+
+        with pytest.raises(DuplicateTargetError):
+            detect_cycles_in_targets([first, second])
 
 
 class TestSameNameInTwoEnvironments:
