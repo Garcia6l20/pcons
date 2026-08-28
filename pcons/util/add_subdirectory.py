@@ -9,6 +9,19 @@ from pcons.core.invocation import RUN_NAME
 from pcons.core.project import Project, _in_virtualenv
 
 
+def _module_origins(module: object) -> list[Path]:
+    """Where a module came from, as paths.
+
+    Its own file for anything with one, a module or a regular package alike. A
+    namespace package has no file, so its search locations are what says where
+    it came from, and it may legitimately have several.
+    """
+    filename = getattr(module, "__file__", None)
+    if filename:
+        return [Path(filename)]
+    return [Path(entry) for entry in getattr(module, "__path__", None) or ()]
+
+
 def _release_local_modules(
     project: Project, subdir_path: Path, before: frozenset[str]
 ) -> None:
@@ -21,24 +34,26 @@ def _release_local_modules(
     registered on import, and shared build-description modules are shared on
     purpose.
 
-    They are registered as configure dependencies on the way out, because the
-    scan that normally does that reads ``sys.modules`` after every inclusion has
-    returned.
+    Whether to uncache and whether to record are separate questions. Anything
+    originating under the directory is uncached, packages and compiled modules
+    included, or a stale entry would outlive the parent it belongs to. Only
+    Python sources become configure dependencies, and only outside a virtualenv,
+    matching what the scan over ``sys.modules`` records; that scan runs long
+    after every inclusion has returned, which is why these are recorded here.
     """
     root = project.top.root_dir.resolve()
     for name, module in list(sys.modules.items()):
         if name in before:
             continue
-        filename = getattr(module, "__file__", None)
-        if not filename or not filename.endswith(".py"):
-            continue
         try:
-            path = Path(filename).resolve()
+            origins = [path.resolve() for path in _module_origins(module)]
         except OSError:
             continue
-        if not path.is_relative_to(subdir_path) or _in_virtualenv(path, root):
+        if not origins or not all(p.is_relative_to(subdir_path) for p in origins):
             continue
-        project.add_configure_dependency(path)
+        for path in origins:
+            if path.suffix == ".py" and not _in_virtualenv(path, root):
+                project.add_configure_dependency(path)
         del sys.modules[name]
 
 
@@ -135,8 +150,10 @@ def add_subdirectory(
         try:
             module = runpy.run_path(str(script), run_name=RUN_NAME)
         finally:
-            sys.path[:] = old_path
+            # Released first: a namespace package's search locations are
+            # recomputed from sys.path, so they still name this directory.
             _release_local_modules(project, subdir_path.resolve(), before)
+            sys.path[:] = old_path
         if pick is not None:
             return tuple(module[name] for name in pick)
         else:

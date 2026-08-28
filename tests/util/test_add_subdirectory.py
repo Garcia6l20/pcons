@@ -80,6 +80,60 @@ class TestSubdirectoryScriptImports:
 
         assert (first.value, second.value) == (1, 1)
 
+    def test_a_regular_package_is_released_with_its_submodules(
+        self, test_project: Project
+    ) -> None:
+        for name in ("a", "b"):
+            subdir = _make_subdir(
+                test_project,
+                name,
+                "import shapes.box\nvalue = (shapes.NAME, shapes.box.NAME)\n",
+            )
+            package = subdir / "shapes"
+            package.mkdir()
+            (package / "__init__.py").write_text(f"NAME = 'pkg-{name}'\n")
+            (package / "box.py").write_text(f"NAME = 'box-{name}'\n")
+
+        first = add_subdirectory("a")
+        second = add_subdirectory("b")
+
+        assert first.value == ("pkg-a", "box-a")
+        assert second.value == ("pkg-b", "box-b")
+        assert not [n for n in sys.modules if n.split(".")[0] == "shapes"]
+
+    def test_a_namespace_package_is_released_too(self, test_project: Project) -> None:
+        """No `__init__.py`, so no `__file__`: its search locations say where."""
+        for name in ("a", "b"):
+            subdir = _make_subdir(
+                test_project, name, "import parts.leaf\nvalue = parts.leaf.NAME\n"
+            )
+            package = subdir / "parts"
+            package.mkdir()
+            (package / "leaf.py").write_text(f"NAME = 'leaf-{name}'\n")
+
+        first = add_subdirectory("a")
+        second = add_subdirectory("b")
+
+        assert (first.value, second.value) == ("leaf-a", "leaf-b")
+        assert not [n for n in sys.modules if n.split(".")[0] == "parts"]
+
+    def test_package_sources_are_configure_dependencies(
+        self, test_project: Project
+    ) -> None:
+        subdir = _make_subdir(test_project, "child", "import shapes.box\n")
+        package = subdir / "shapes"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        (package / "box.py").write_text("NAME = 'box'\n")
+
+        add_subdirectory("child")
+
+        deps = {
+            Path(p).parent.name + "/" + Path(p).name
+            for p in test_project.configure_dependencies
+        }
+        assert {"shapes/__init__.py", "shapes/box.py"} <= deps
+
     def test_a_module_outside_the_subdirectory_stays_cached(
         self, test_project: Project
     ) -> None:

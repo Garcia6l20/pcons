@@ -883,8 +883,9 @@ Its own directory comes first, so a module there shadows a same-named one beside
 the root script while the inclusion runs. Editing an imported module re-runs
 pcons, like editing the build script itself.
 
-Those modules belong to the inclusion. Two subdirectories may each carry a
-`sources.py` without seeing each other's, and a directory included twice imports
+Those modules belong to the inclusion, packages as much as single files. Two
+subdirectories may each carry a `sources.py`, or a `shapes/` package, without
+seeing each other's, and a directory included twice imports
 its own again rather than reusing what the first pass computed, so a helper that
 reads the environment is right both times. Modules from anywhere else stay
 cached as usual: the standard library, installed packages, and a module beside
