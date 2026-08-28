@@ -115,8 +115,11 @@ class Environment(_EnvironmentStubs):
 
     Attributes:
         build_dir: Directory for build outputs, with build_prefix applied.
-        build_prefix: Directory below the top-level build directory holding
-            everything this environment writes, outputs and intermediates alike.
+        build_prefix: Directory below the build directory holding everything
+            this environment writes, outputs and intermediates alike. It sits
+            under an explicitly set build_dir and above the add_subdirectory
+            offset, so 'build/rel' plus 'mcu' is build/rel/mcu while a
+            sub-project of a plain build is build/mcu/sub.
         runtime_directory: Directory for program outputs, below build_dir.
         library_directory: Directory for shared library outputs, below build_dir.
         archive_directory: Directory for static library outputs, and for Windows
@@ -128,6 +131,7 @@ class Environment(_EnvironmentStubs):
         "_tools",
         "_vars",
         "_build_dir_base",
+        "_build_dir_offset",
         "_project",
         "_toolchain",
         "_additional_toolchains",
@@ -178,6 +182,7 @@ class Environment(_EnvironmentStubs):
             "archive_directory": None,
         }
         self._build_dir_base = Path("build")
+        self._build_dir_offset = Path()
         from pcons.core.project import Project
 
         self._project = Project.current()
@@ -302,7 +307,8 @@ class Environment(_EnvironmentStubs):
         elif name in PLACEMENT_VARS:
             self._set_placement(name, value)
         elif name == "build_dir":
-            object.__setattr__(self, "_build_dir_base", Path(value))
+            self._build_dir_base = Path(value)
+            self._build_dir_offset = Path()
             self._get_vars()["build_dir"] = self._effective_build_dir()
         else:
             vars_dict = self._get_vars()
@@ -330,27 +336,36 @@ class Environment(_EnvironmentStubs):
         if name == "build_prefix":
             self._get_vars()["build_dir"] = self._effective_build_dir()
 
+    def _set_project_build_dir(self, top_build_dir: Path, build_dir: Path) -> None:
+        """Anchor this environment on its project's build directory.
+
+        The top-level directory becomes the base and the ``add_subdirectory``
+        remainder the offset, so ``build_prefix`` lands between the two and a
+        sub-project keeps its shape inside the environment's slice instead of
+        the offset being applied twice.
+        """
+        base = Path(top_build_dir)
+        try:
+            offset = Path(build_dir).relative_to(base)
+        except ValueError:
+            base, offset = Path(build_dir), Path()
+        self._build_dir_base = base
+        self._build_dir_offset = offset
+        self._get_vars()["build_dir"] = self._effective_build_dir()
+
     def _effective_build_dir(self) -> Path:
         """The build directory with ``build_prefix`` inserted.
 
-        The prefix goes between the top-level build directory and the owning
-        project's ``add_subdirectory`` offset, so a sub-project keeps its shape
-        inside the environment's slice instead of the offset being applied
-        twice.
+        The prefix goes below the named directory and above the
+        ``add_subdirectory`` offset. Assigning ``build_dir`` names the whole
+        directory, which clears the offset, so an explicitly set build
+        directory keeps the prefix under it.
         """
-        base: Path = object.__getattribute__(self, "_build_dir_base")
+        base: Path = self._build_dir_base
+        offset: Path = self._build_dir_offset
         prefix = self._get_vars().get("build_prefix")
-        if not prefix:
-            return base
-
-        project = object.__getattribute__(self, "_project")
-        top_build = project.top.build_dir if project is not None else None
-        if top_build is not None and not base.is_absolute():
-            head = top_build.parts
-            if base.parts[: len(head)] == head:
-                rest = base.parts[len(head) :]
-                return top_build / prefix / Path(*rest) if rest else top_build / prefix
-        return base / prefix
+        result = base / prefix if prefix else base
+        return result / offset if offset.parts else result
 
     def _refuse_taken_name(self, name: str) -> None:
         """Raise if another environment of this project already answers to *name*.
@@ -495,18 +510,18 @@ class Environment(_EnvironmentStubs):
 
     @property
     def name(self) -> str | None:
-        """Return the environment name, if set."""
-        return object.__getattribute__(self, "_name")
+        """The environment name, if set.
+
+        Assignment goes through ``__setattr__``, which validates the new name.
+        """
+        return self._name
 
     @name.setter
     def name(self, value: str | None) -> None:
-        """Set the environment name.
-
-        Never reached: ``__setattr__`` handles the assignment, because it
-        intercepts every attribute before the descriptor protocol runs. Kept
-        so the property reads as read-write to type checkers.
+        """Never runs: ``__setattr__`` takes the assignment first, and
+        validates it. Here so the property stays read-write to type checkers.
         """
-        object.__setattr__(self, "_name", value)
+        self._name = value
 
     def get(self, name: str, default: Any = None) -> Any:
         """Get a variable or tool with a default."""
@@ -627,6 +642,9 @@ class Environment(_EnvironmentStubs):
         new_env._applied_presets = list(self._applied_presets)
         new_env._applied_imperative = list(self._applied_imperative)
         new_env._use_origins = dict(self._use_origins)
+
+        new_env._build_dir_base = self._build_dir_base
+        new_env._build_dir_offset = self._build_dir_offset
 
         # Copy toolchain references (not cloned - they're shared)
         new_env._toolchain = self._toolchain

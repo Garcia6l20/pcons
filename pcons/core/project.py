@@ -637,7 +637,7 @@ class Project(_ProjectBuilders):
             setattr(env, key, value)
 
         # Set build_dir from project
-        env.build_dir = self.build_dir
+        env._set_project_build_dir(self.top.build_dir, self.build_dir)
 
         self._environments.append(env)
         return env

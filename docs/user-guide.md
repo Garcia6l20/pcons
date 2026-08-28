@@ -1595,6 +1595,12 @@ that sets none of them sees no path change. The toolchain still decides the
 `lib` prefix and the `.a` / `.lib` suffix, which is why these are directories
 and `output_prefix` is not (that one replaces the toolchain's filename prefix).
 
+`build_prefix` sits under the build directory and above the `add_subdirectory`
+offset. With `env.build_dir = "build/rel"`, a `build_prefix` of `mcu` gives
+`build/rel/mcu`, and a sub-project keeps its shape inside the slice, at
+`build/mcu/sub`. Setting `env.build_dir` names the whole directory, so a
+sub-project that does it drops its offset.
+
 Because the two environments write in different directories, a target name can
 be repeated, and building one library for both is a plain Python function:
 
