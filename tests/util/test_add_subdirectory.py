@@ -54,6 +54,57 @@ class TestSubdirectoryScriptImports:
 
         assert ns.value == ("outer", "inner")
 
+    def test_two_subdirectories_keep_their_own(self, test_project: Project) -> None:
+        for name in ("a", "b"):
+            subdir = _make_subdir(
+                test_project, name, "import sources\nvalue = sources.NAME\n"
+            )
+            (subdir / "sources.py").write_text(f"NAME = 'from-{name}'\n")
+
+        first = add_subdirectory("a")
+        second = add_subdirectory("b")
+
+        assert (first.value, second.value) == ("from-a", "from-b")
+        assert "sources" not in sys.modules
+
+    def test_a_second_inclusion_imports_again(self, test_project: Project) -> None:
+        subdir = _make_subdir(
+            test_project, "child", "import counter\nvalue = counter.PASS\n"
+        )
+        (subdir / "counter.py").write_text(
+            "import itertools\n_seq = itertools.count(1)\nPASS = next(_seq)\n"
+        )
+
+        first = add_subdirectory("child")
+        second = add_subdirectory("child")
+
+        assert (first.value, second.value) == (1, 1)
+
+    def test_a_module_outside_the_subdirectory_stays_cached(
+        self, test_project: Project
+    ) -> None:
+        (test_project.root_dir / "shared.py").write_text("V = 'root'\n")
+        _make_subdir(test_project, "child", "import shared\nvalue = shared.V\n")
+        sys.path.insert(0, str(test_project.root_dir))
+        try:
+            ns = add_subdirectory("child")
+        finally:
+            sys.path.pop(0)
+            sys.modules.pop("shared", None)
+
+        assert ns.value == "root"
+
+    def test_a_released_module_is_a_configure_dependency(
+        self, test_project: Project
+    ) -> None:
+        subdir = _make_subdir(test_project, "child", "import helper\nx = helper.V\n")
+        (subdir / "helper.py").write_text("V = 1\n")
+
+        add_subdirectory("child")
+
+        deps = {Path(p).name for p in test_project.configure_dependencies}
+        assert "helper.py" in deps
+
     def test_the_path_is_restored(self, test_project: Project) -> None:
         _make_subdir(test_project, "child", "x = 1\n")
         before = list(sys.path)

@@ -6,7 +6,40 @@ from typing import overload
 
 from pcons.core.environment import Environment as Env
 from pcons.core.invocation import RUN_NAME
-from pcons.core.project import Project
+from pcons.core.project import Project, _in_virtualenv
+
+
+def _release_local_modules(
+    project: Project, subdir_path: Path, before: frozenset[str]
+) -> None:
+    """Uncache the modules an inclusion imported from its own directory.
+
+    An inclusion owns the modules beside its script, so two subdirectories
+    carrying the same module name get one each, and a directory included twice
+    re-imports rather than reusing what the first pass computed. Modules from
+    anywhere else stay cached: re-importing a package would re-run whatever it
+    registered on import, and shared build-description modules are shared on
+    purpose.
+
+    They are registered as configure dependencies on the way out, because the
+    scan that normally does that reads ``sys.modules`` after every inclusion has
+    returned.
+    """
+    root = project.top.root_dir.resolve()
+    for name, module in list(sys.modules.items()):
+        if name in before:
+            continue
+        filename = getattr(module, "__file__", None)
+        if not filename or not filename.endswith(".py"):
+            continue
+        try:
+            path = Path(filename).resolve()
+        except OSError:
+            continue
+        if not path.is_relative_to(subdir_path) or _in_virtualenv(path, root):
+            continue
+        project.add_configure_dependency(path)
+        del sys.modules[name]
 
 
 @overload
@@ -97,11 +130,13 @@ def add_subdirectory(
         # The script reaches its own neighbours the way a root build script
         # does, which the CLI arranges for that one.
         old_path = sys.path.copy()
+        before = frozenset(sys.modules)
         sys.path.insert(0, str(subdir_path))
         try:
             module = runpy.run_path(str(script), run_name=RUN_NAME)
         finally:
             sys.path[:] = old_path
+            _release_local_modules(project, subdir_path.resolve(), before)
         if pick is not None:
             return tuple(module[name] for name in pick)
         else:

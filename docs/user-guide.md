@@ -883,9 +883,12 @@ Its own directory comes first, so a module there shadows a same-named one beside
 the root script while the inclusion runs. Editing an imported module re-runs
 pcons, like editing the build script itself.
 
-Python caches modules by name across the whole run, so two subdirectories that
-each carry a `sources.py` share one: whichever is included first wins, silently.
-Give helper modules names that say where they belong, or put them in a package.
+Those modules belong to the inclusion. Two subdirectories may each carry a
+`sources.py` without seeing each other's, and a directory included twice imports
+its own again rather than reusing what the first pass computed, so a helper that
+reads the environment is right both times. Modules from anywhere else stay
+cached as usual: the standard library, installed packages, and a module beside
+the root script, which is the place to put one several subdirectories share.
 
 See `examples/13_subdirs` for a worked example, including a library nested two
 levels down.
