@@ -438,14 +438,12 @@ def _persist_run_settings_to_projects(
     own — relative to its build directory, so completion under
     ``-B <sibling's dir>`` offers what that directory can build.
     """
-    from pcons.core.cache import BuildCache
-
     cli_dir = os.path.normcase(os.path.normpath(cli_build_dir.absolute()))
     for project in projects:
         project_dir = project._effective_output_dir()
         if os.path.normcase(str(project_dir)) == cli_dir:
             continue
-        cache = BuildCache(project_dir)
+        cache = _open_cache(project_dir)
         _persist_run_settings(
             cache,
             variables,
@@ -539,7 +537,7 @@ def run_script(
     # one place: this run's command line > environment > persisted cache > default.
     # The core readers (get_var/get_variant/Generator) only see the PCONS_* env
     # vars set from these values below.
-    cache = pcons.core.cache.BuildCache(build_dir)
+    cache = _open_cache(build_dir)
     current_source = str(script_path.parent.absolute())
     recorded_source = cache.get("source_dir")
     if isinstance(recorded_source, str) and recorded_source != current_source:
@@ -788,6 +786,7 @@ def run_script(
                 os.environ.pop(key, None)
         # PCONS_BUILD_DIR is restored above; drop the singleton bound to it.
         pcons.core.cache.reset_cache()
+        _drop_open_caches()
 
 
 def _find_ninja(override: str | None = None) -> list[str] | None:
@@ -1254,9 +1253,7 @@ def _run_build_tool(
         # Xcode picks the configuration at build time; fall back to the cached
         # variant so a bare build matches what was generated, not Release.
         if variant is None:
-            import pcons.core.cache
-
-            cached = pcons.core.cache.BuildCache(build_dir).get("variant")
+            cached = _open_cache(build_dir).get("variant")
             variant = cached if isinstance(cached, str) else None
         return run_xcodebuild(
             build_dir,
@@ -1378,6 +1375,28 @@ def _route_targets(
     return [(p, routed[id(p)]) for p in projects if routed[id(p)]]
 
 
+def _forces_regeneration(
+    build_dir: Path,
+    variables: dict[str, str],
+    reconfigure: bool,
+    fresh: bool,
+) -> bool:
+    """Whether this invocation must regenerate even when the build files are fresh.
+
+    The staleness check compares mtimes, and a build variable or a configure
+    flag changes what the script would write without touching it. A variable
+    whose persisted value already matches changes nothing, so it does not force
+    the describe pass.
+    """
+    if reconfigure or fresh:
+        return True
+    if not variables:
+        return False
+    cached = _open_cache(build_dir).get("vars")
+    cached = cached if isinstance(cached, dict) else {}
+    return any(cached.get(name) != value for name, value in variables.items())
+
+
 def _build(
     build_dir: Path,
     *,
@@ -1389,6 +1408,7 @@ def _build(
     verbose: bool = False,
     ninja: str | None = None,
     variant: str | None = None,
+    force_regenerate: bool = False,
 ) -> tuple[int, list[Path]]:
     """Run one build, regenerating first if the build files are stale.
 
@@ -1402,12 +1422,19 @@ def _build(
     serialized, in script order, each named target routed to the project
     that owns it. A failure stops the run there.
 
+    *force_regenerate* regenerates even when the build files look fresh:
+    the staleness check compares mtimes, and a build variable or a configure
+    flag passed on this invocation changes what the script would write
+    without touching it.
+
     Returns:
         Tuple of (exit code, the directories built, in order). Not always
         the one asked for: a regeneration may run a script that picks its
         own.
     """
-    if _needs_generation(build_dir, build_script=str(script) if script else None):
+    if force_regenerate or _needs_generation(
+        build_dir, build_script=str(script) if script else None
+    ):
         found = _resolve_build_script(script)
         if found is not None and found.exists():
             logger.info("Build files missing or out of date, regenerating...")
@@ -1487,11 +1514,34 @@ def _clean(build_dir: Path, *, everything: bool, ninja: str | None) -> int:
         return 1
 
 
+_open_caches: dict[str, BuildCache] = {}
+
+
 def _open_cache(build_dir: Path) -> BuildCache:
-    """The build directory's cache. Reads the file; never runs the script."""
+    """The build directory's cache. Reads the file; never runs the script.
+
+    One instance per directory per invocation, so a run that reads before
+    generating and writes after does not work on two copies of the file. The
+    key is a directory rather than nothing because a multi-project run reaches
+    several: it mirrors the settings into every sibling build directory, and
+    builds in each of them.
+
+    Dropped by :func:`_drop_open_caches` once a build script has run: the
+    script writes the same file through its own singleton, and an instance
+    held across that would answer from what it read beforehand.
+    """
     from pcons.core.cache import BuildCache
 
-    return BuildCache(build_dir)
+    key = os.path.normcase(os.path.normpath(str(build_dir.absolute())))
+    cache = _open_caches.get(key)
+    if cache is None:
+        cache = _open_caches[key] = BuildCache(build_dir)
+    return cache
+
+
+def _drop_open_caches() -> None:
+    """Forget the opened caches, so the next read comes from the file."""
+    _open_caches.clear()
 
 
 def _cache_path(build_dir: Path) -> int:
@@ -1984,6 +2034,8 @@ Docs:    https://pcons.readthedocs.io/
 @jobs_option
 @pass_pcons_context
 def cli(ctx: PconsContext, **declared_but_unused: object) -> None:
+    _drop_open_caches()
+
     # Before any command: a script that did pcons work and only then called the
     # CLI did so without a command line, so whatever it decided was decided on
     # the wrong values. Checked here rather than where the script is run, so a
@@ -2283,6 +2335,7 @@ def cli_build(
     """Build targets, generating first if the build files are stale."""
     script = Path(build_script) if build_script else None
     variables, targets = parse_variables(list(extra))
+    pending_force = _forces_regeneration(build_dir, variables, reconfigure, fresh)
 
     # The projects from the last regeneration. A watch iteration whose build
     # files are fresh skips regeneration, and without these it would fall
@@ -2305,6 +2358,8 @@ def cli_build(
         return code, projects
 
     def build_once() -> tuple[int, list[Path]]:
+        nonlocal pending_force
+        force, pending_force = pending_force, False
         return _build(
             build_dir,
             regenerate=regenerate,
@@ -2315,6 +2370,7 @@ def cli_build(
             verbose=verbose,
             ninja=ninja,
             variant=variant,
+            force_regenerate=force,
         )
 
     if watch:
@@ -3085,22 +3141,30 @@ def cli_default(
             known_projects[:] = regenerated
         return code, regenerated
 
+    pending_force = _forces_regeneration(build_dir, variables, reconfigure, fresh)
+
+    def build_once() -> tuple[int, list[Path]]:
+        nonlocal pending_force
+        force, pending_force = pending_force, False
+        return _build(
+            build_dir,
+            regenerate=regenerate,
+            projects=list(known_projects) or None,
+            script=script,
+            targets=targets or None,
+            jobs=jobs,
+            verbose=verbose,
+            ninja=ninja,
+            variant=variant,
+            force_regenerate=force,
+        )
+
     # _build generates on its own when the build files are stale, which is the
     # right entry point for a watch: it regenerates only when needed.
     if watch:
         ctx.exit(
             _watch(
-                build=lambda: _build(
-                    build_dir,
-                    regenerate=regenerate,
-                    projects=list(known_projects) or None,
-                    script=script,
-                    targets=targets or None,
-                    jobs=jobs,
-                    verbose=verbose,
-                    ninja=ninja,
-                    variant=variant,
-                ),
+                build=build_once,
                 script=_resolve_build_script(script),
                 targets=targets,
                 ninja=ninja,
