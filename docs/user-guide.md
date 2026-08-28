@@ -1599,7 +1599,10 @@ and `output_prefix` is not (that one replaces the toolchain's filename prefix).
 offset. With `env.build_dir = "build/rel"`, a `build_prefix` of `mcu` gives
 `build/rel/mcu`, and a sub-project keeps its shape inside the slice, at
 `build/mcu/sub`. Setting `env.build_dir` names the whole directory, so a
-sub-project that does it drops its offset.
+sub-project that does it drops its own offset, and its targets keep theirs.
+
+Everything the environment writes follows both settings, objects and artifacts
+alike. `env.build_dir` is the one place that decides where an environment builds.
 
 Because the two environments write in different directories, a target name can
 be repeated, and building one library for both is a plain Python function:

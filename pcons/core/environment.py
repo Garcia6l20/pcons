@@ -186,6 +186,10 @@ class Environment(_EnvironmentStubs):
         from pcons.core.project import Project
 
         self._project = Project.current()
+        if self._project is not None:
+            self._set_project_build_dir(
+                self._project.top.build_dir, self._project.build_dir
+            )
 
         self._toolchain = toolchain
         self._additional_toolchains: list[Toolchain] = []
@@ -353,19 +357,34 @@ class Environment(_EnvironmentStubs):
         self._build_dir_offset = offset
         self._get_vars()["build_dir"] = self._effective_build_dir()
 
+    def build_dir_for(self, subdir: Path) -> Path:
+        """The directory a target at *subdir* builds in.
+
+        The offset is the target's rather than this environment's: an
+        environment defined in one project may build targets declared in
+        another, and it is the target's place in the tree that decides.
+
+        Args:
+            subdir: The target's offset from the top-level root, empty for a
+                target of the top-level project.
+
+        Returns:
+            The build directory, ``build_prefix`` included.
+        """
+        base: Path = self._build_dir_base
+        prefix = self._get_vars().get("build_prefix")
+        result = base / prefix if prefix else base
+        return result / subdir if subdir.parts else result
+
     def _effective_build_dir(self) -> Path:
-        """The build directory with ``build_prefix`` inserted.
+        """This environment's own build directory.
 
         The prefix goes below the named directory and above the
         ``add_subdirectory`` offset. Assigning ``build_dir`` names the whole
         directory, which clears the offset, so an explicitly set build
         directory keeps the prefix under it.
         """
-        base: Path = self._build_dir_base
-        offset: Path = self._build_dir_offset
-        prefix = self._get_vars().get("build_prefix")
-        result = base / prefix if prefix else base
-        return result / offset if offset.parts else result
+        return self.build_dir_for(self._build_dir_offset)
 
     def _refuse_taken_name(self, name: str) -> None:
         """Raise if another environment of this project already answers to *name*.

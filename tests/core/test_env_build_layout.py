@@ -135,6 +135,48 @@ class TestBuildPrefix:
 
         assert _paths(lib) == {"build/mcu/sub/libthing.a"}
 
+    def test_targets_follow_a_named_build_dir(self, tmp_path, source, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        env.build_dir = "build/rel"
+        env.build_prefix = "mcu"
+        lib = project.StaticLibrary("common", env, sources=["src/common.c"])
+
+        project.resolve()
+
+        assert env.build_dir == Path("build/rel/mcu")
+        assert lib.build_dir == Path("build/rel/mcu")
+        assert _paths(lib) == {"build/rel/mcu/libcommon.a"}
+        assert _object_paths(lib) == {"build/rel/mcu/obj.common/src/common.c.o"}
+
+    def test_a_named_build_dir_keeps_the_subdirectory_offset(
+        self, tmp_path, source, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        env.build_dir = "build/rel"
+        env.build_prefix = "mcu"
+        (tmp_path / "sub" / "src").mkdir(parents=True)
+        (tmp_path / "sub" / "src" / "thing.c").write_text("int g(void) { return 2; }\n")
+        with project._enter_subdir("sub"):
+            lib = project.StaticLibrary("thing", env, sources=["src/thing.c"])
+
+        project.resolve()
+
+        assert _paths(lib) == {"build/rel/mcu/sub/libthing.a"}
+
+    def test_a_named_build_dir_moves_targets_without_a_prefix(
+        self, tmp_path, source, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        env.build_dir = "build/rel"
+        lib = project.StaticLibrary("common", env, sources=["src/common.c"])
+
+        project.resolve()
+
+        assert _paths(lib) == {"build/rel/libcommon.a"}
+
     def test_command_outputs_follow(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
         env = project.Environment(toolchain=gcc_toolchain, name="host")
