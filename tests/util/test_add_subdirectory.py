@@ -541,11 +541,14 @@ class TestSubdirectoryEnvironment:
 
         assert first.lib.env is host
         assert second.lib.env is mcu
+        prefix = host._toolchain.get_output_prefix("static_library")
+        suffix = host._toolchain.get_output_suffix("static_library")
+        name = f"{prefix}thing{suffix}"
         assert [n.path.as_posix() for n in first.lib.output_nodes] == [
-            "build/host/sub/libthing.a"
+            f"build/host/sub/{name}"
         ]
         assert [n.path.as_posix() for n in second.lib.output_nodes] == [
-            "build/mcu/sub/libthing.a"
+            f"build/mcu/sub/{name}"
         ]
         assert test_project.get_target("thing@host") is first.lib
         assert test_project.get_target("thing@mcu") is second.lib

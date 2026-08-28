@@ -7328,14 +7328,18 @@ class TestEnvQualifiedTargets:
         project.resolve()
         return project
 
+    def _archive(self, toolchain, directory: str, base: str) -> str:
+        prefix = toolchain.get_output_prefix("static_library")
+        suffix = toolchain.get_output_suffix("static_library")
+        return f"{directory}/{prefix}{base}{suffix}"
+
     def test_a_spelling_becomes_its_output_path(self, tmp_path, gcc_toolchain) -> None:
         from pcons.cli import _route_targets
 
         project = self._project(tmp_path, gcc_toolchain)
+        archive = self._archive(gcc_toolchain, "mcu/lib", "common")
 
-        assert _route_targets([project], ["common@mcu"]) == [
-            (project, ["mcu/lib/libcommon.a"])
-        ]
+        assert _route_targets([project], ["common@mcu"]) == [(project, [archive])]
 
     def test_other_tokens_pass_through(self, tmp_path, gcc_toolchain) -> None:
         from pcons.cli import _route_targets
@@ -7400,8 +7404,8 @@ class TestEnvQualifiedTargets:
         project = self._project(tmp_path, gcc_toolchain)
 
         assert _env_target_paths(project) == {
-            "common@mcu": ["mcu/lib/libcommon.a"],
-            "common@host": ["host/lib/libcommon.a"],
+            "common@mcu": [self._archive(gcc_toolchain, "mcu/lib", "common")],
+            "common@host": [self._archive(gcc_toolchain, "host/lib", "common")],
         }
 
 

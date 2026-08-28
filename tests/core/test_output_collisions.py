@@ -80,7 +80,10 @@ class TestOutputCollisions:
             for target in project.targets
             for node in target.output_nodes
         }
-        assert paths == {"build/a/libcommon.a", "build/b/libcommon.a"}
+        prefix = gcc_toolchain.get_output_prefix("static_library")
+        suffix = gcc_toolchain.get_output_suffix("static_library")
+        name = f"{prefix}common{suffix}"
+        assert paths == {f"build/a/{name}", f"build/b/{name}"}
 
     def test_two_commands_one_target_file_raises(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)

@@ -29,6 +29,22 @@ def _object_paths(target) -> set[str]:
     return {node.path.as_posix() for node in target.intermediate_nodes}
 
 
+def _artifact(toolchain, directory: str, base: str, kind: str) -> set[str]:
+    """The one path *kind* named *base* lands at, named as the platform names it.
+
+    These tests are about where a file goes, so the name comes from the same
+    toolchain the target was built with rather than from a Unix spelling.
+    """
+    prefix = toolchain.get_output_prefix(kind)
+    suffix = toolchain.get_output_suffix(kind)
+    return {f"{directory}/{prefix}{base}{suffix}"}
+
+
+def _object(toolchain, directory: str, source: str) -> set[str]:
+    """The one object path compiled from *source*, named as the toolchain names it."""
+    return {f"{directory}/{source}{toolchain.get_object_suffix()}"}
+
+
 _WINDOWS_SUFFIXES = {"static_library": ".lib", "shared_library": ".dll"}
 
 
@@ -70,8 +86,12 @@ class TestBuildPrefix:
 
         project.resolve()
 
-        assert _paths(lib) == {"build/mcu/libcommon.a"}
-        assert _object_paths(lib) == {"build/mcu/obj.common/src/common.c.o"}
+        assert _paths(lib) == _artifact(
+            gcc_toolchain, "build/mcu", "common", "static_library"
+        )
+        assert _object_paths(lib) == _object(
+            gcc_toolchain, "build/mcu/obj.common/src", "common.c"
+        )
 
     def test_two_environments_keep_one_name_apart(
         self, tmp_path, source, gcc_toolchain
@@ -90,8 +110,12 @@ class TestBuildPrefix:
 
         project.resolve()
 
-        assert _paths(libs[0]) == {"build/mcu/lib/libcommon.a"}
-        assert _paths(libs[1]) == {"build/host/lib/libcommon.a"}
+        assert _paths(libs[0]) == _artifact(
+            gcc_toolchain, "build/mcu/lib", "common", "static_library"
+        )
+        assert _paths(libs[1]) == _artifact(
+            gcc_toolchain, "build/host/lib", "common", "static_library"
+        )
 
     def test_env_build_dir_carries_the_prefix(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -133,7 +157,9 @@ class TestBuildPrefix:
 
         project.resolve()
 
-        assert _paths(lib) == {"build/mcu/sub/libthing.a"}
+        assert _paths(lib) == _artifact(
+            gcc_toolchain, "build/mcu/sub", "thing", "static_library"
+        )
 
     def test_targets_follow_a_named_build_dir(self, tmp_path, source, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -146,8 +172,12 @@ class TestBuildPrefix:
 
         assert env.build_dir == Path("build/rel/mcu")
         assert lib.build_dir == Path("build/rel/mcu")
-        assert _paths(lib) == {"build/rel/mcu/libcommon.a"}
-        assert _object_paths(lib) == {"build/rel/mcu/obj.common/src/common.c.o"}
+        assert _paths(lib) == _artifact(
+            gcc_toolchain, "build/rel/mcu", "common", "static_library"
+        )
+        assert _object_paths(lib) == _object(
+            gcc_toolchain, "build/rel/mcu/obj.common/src", "common.c"
+        )
 
     def test_a_named_build_dir_keeps_the_subdirectory_offset(
         self, tmp_path, source, gcc_toolchain
@@ -163,7 +193,9 @@ class TestBuildPrefix:
 
         project.resolve()
 
-        assert _paths(lib) == {"build/rel/mcu/sub/libthing.a"}
+        assert _paths(lib) == _artifact(
+            gcc_toolchain, "build/rel/mcu/sub", "thing", "static_library"
+        )
 
     def test_a_named_build_dir_moves_targets_without_a_prefix(
         self, tmp_path, source, gcc_toolchain
@@ -175,7 +207,9 @@ class TestBuildPrefix:
 
         project.resolve()
 
-        assert _paths(lib) == {"build/rel/libcommon.a"}
+        assert _paths(lib) == _artifact(
+            gcc_toolchain, "build/rel", "common", "static_library"
+        )
 
     def test_command_outputs_follow(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -235,9 +269,15 @@ class TestOutputDirectories:
 
         project.resolve()
 
-        assert _paths(archive) == {"build/mcu/lib/liba.a"}
-        assert _paths(shared) == {"build/mcu/lib/libs.so"}
-        assert _paths(program) == {"build/mcu/bin/p"}
+        assert _paths(archive) == _artifact(
+            gcc_toolchain, "build/mcu/lib", "a", "static_library"
+        )
+        assert _paths(shared) == _artifact(
+            gcc_toolchain, "build/mcu/lib", "s", "shared_library"
+        )
+        assert _paths(program) == _artifact(
+            gcc_toolchain, "build/mcu/bin", "p", "program"
+        )
 
     def test_objects_do_not_move(self, tmp_path, source, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -248,7 +288,9 @@ class TestOutputDirectories:
 
         project.resolve()
 
-        assert _object_paths(lib) == {"build/mcu/obj.common/src/common.c.o"}
+        assert _object_paths(lib) == _object(
+            gcc_toolchain, "build/mcu/obj.common/src", "common.c"
+        )
 
     def test_unknown_target_type_has_no_directory(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -271,20 +313,23 @@ class TestOutputDirectories:
 
         project.resolve()
 
-        assert _paths(lib) == {"build/mcu/lib/common.a"}
+        suffix = gcc_toolchain.get_output_suffix("static_library")
+        assert _paths(lib) == {f"build/mcu/lib/common{suffix}"}
 
 
 class TestWindowsImportLibrary:
     def test_it_goes_to_the_archive_directory(
-        self, tmp_path, source, gcc_toolchain, monkeypatch
+        self, tmp_path, source, windows_toolchain, monkeypatch
     ):
         """CMake sends a DLL to RUNTIME/LIBRARY and its import lib to ARCHIVE.
 
         sys.platform is patched around resolve() only, because tool detection
         reads it too and shutil.which cannot answer for a platform it is not on.
+        The toolchain names outputs the way MSVC does whatever the host is, so
+        the expected paths do not depend on where the test runs.
         """
         project = Project("p", root_dir=tmp_path)
-        env = project.Environment(toolchain=gcc_toolchain, name="win")
+        env = project.Environment(toolchain=windows_toolchain, name="win")
         env.build_prefix = "win"
         env.library_directory = "bin"
         env.archive_directory = "lib"
@@ -293,9 +338,8 @@ class TestWindowsImportLibrary:
         monkeypatch.setattr("sys.platform", "win32")
         project.resolve()
 
-        outputs = shared.output_nodes[0]._build_info["outputs"]
-        assert outputs["primary"]["path"].as_posix() == "build/win/bin/libs.so"
-        assert outputs["import_lib"]["path"].as_posix() == "build/win/lib/libs.lib"
+        assert _primary_path(shared) == "build/win/bin/s.dll"
+        assert _import_lib_path(shared) == "build/win/lib/s.lib"
 
     def test_it_follows_the_dll_with_no_archive_directory(
         self, tmp_path, source, windows_toolchain, monkeypatch

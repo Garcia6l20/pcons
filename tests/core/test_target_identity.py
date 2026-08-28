@@ -67,7 +67,10 @@ class TestDuplicateNames:
         project.resolve()
 
         paths = {node.path.as_posix() for lib in libs for node in lib.output_nodes}
-        assert paths == {"build/mcu/libcommon.a", "build/host/libcommon.a"}
+        prefix = gcc_toolchain.get_output_prefix("static_library")
+        suffix = gcc_toolchain.get_output_suffix("static_library")
+        name = f"{prefix}common{suffix}"
+        assert paths == {f"build/mcu/{name}", f"build/host/{name}"}
 
     def test_the_same_environment_twice_is_refused(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
