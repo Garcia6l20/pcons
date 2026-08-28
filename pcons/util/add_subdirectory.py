@@ -3,19 +3,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import overload
 
+from pcons.core.environment import Environment as Env
 from pcons.core.invocation import RUN_NAME
 from pcons.core.project import Project
 
 
 @overload
 def add_subdirectory(
-    subdir: str | Path, pick: list[str], *, project: Project | None = None
+    subdir: str | Path,
+    pick: list[str],
+    *,
+    project: Project | None = None,
+    env: Env | None = None,
 ) -> tuple: ...
 
 
 @overload
 def add_subdirectory(
-    subdir: str | Path, pick: None = None, *, project: Project | None = None
+    subdir: str | Path,
+    pick: None = None,
+    *,
+    project: Project | None = None,
+    env: Env | None = None,
 ) -> SimpleNamespace: ...
 
 
@@ -24,6 +33,7 @@ def add_subdirectory(
     pick: list[str] | None = None,
     *,
     project: Project | None = None,
+    env: Env | None = None,
 ) -> tuple | SimpleNamespace:
     """Adds a subdirectory to the project.
 
@@ -54,6 +64,16 @@ def add_subdirectory(
         project: The project to add the subdirectory to. Defaults to the
             current project; in a script with several top-level projects,
             name the one you mean (or call ``project.add_subdirectory()``).
+        env: The environment the included tree builds in. It becomes the
+            default environment for the duration of the call, so a script
+            reading ``project.parent.default_environment`` gets it. Include
+            the same directory once per environment to build it twice::
+
+                add_subdirectory("sub", env=host)
+                add_subdirectory("sub", env=mcu)
+
+            The two environments need different ``build_prefix`` values,
+            and both must be named, or their targets collide.
 
     Returns:
         - If ``pick`` is not specified, a ``SimpleNamespace`` whose attributes
@@ -72,7 +92,7 @@ def add_subdirectory(
     # script; register it directly or editing it wouldn't re-run pcons.
     project.add_configure_dependency(script)
 
-    with project._enter_subdir(subdir):
+    with project._enter_subdir(subdir, env=env):
         module = runpy.run_path(str(script), run_name=RUN_NAME)
         if pick is not None:
             return tuple(module[name] for name in pick)

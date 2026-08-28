@@ -278,3 +278,160 @@ class TestSubprojectDirectories:
 
         assert alpha.lib.sources[0].path == Path("alpha/src/x.c")
         assert beta.lib.sources[0].path == Path("beta/src/x.c")
+
+
+class TestSubdirectoryEnvironment:
+    """``add_subdirectory(..., env=...)`` builds one tree per environment."""
+
+    SUB = (
+        "from pcons.core.project import Project\n"
+        "project = Project('sub')\n"
+        "env = project.parent.default_environment\n"
+        "lib = project.StaticLibrary('thing', env, sources=['src/thing.c'])\n"
+    )
+
+    @pytest.fixture
+    def two_envs(self, test_project: Project, gcc_toolchain):
+        host = test_project.Environment(toolchain=gcc_toolchain, name="host")
+        host.build_prefix = "host"
+        mcu = test_project.Environment(toolchain=gcc_toolchain, name="mcu")
+        mcu.build_prefix = "mcu"
+        return host, mcu
+
+    def _source(self, subdir: Path) -> None:
+        (subdir / "src").mkdir(parents=True, exist_ok=True)
+        (subdir / "src" / "thing.c").write_text("int g(void) { return 2; }\n")
+
+    def test_one_subdirectory_builds_once_per_environment(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, mcu = two_envs
+        self._source(_make_subdir(test_project, "sub", self.SUB))
+
+        first = add_subdirectory("sub", env=host)
+        second = add_subdirectory("sub", env=mcu)
+        test_project.resolve()
+
+        assert first.lib.env is host
+        assert second.lib.env is mcu
+        assert [n.path.as_posix() for n in first.lib.output_nodes] == [
+            "build/host/sub/libthing.a"
+        ]
+        assert [n.path.as_posix() for n in second.lib.output_nodes] == [
+            "build/mcu/sub/libthing.a"
+        ]
+        assert test_project.get_target("thing@host") is first.lib
+        assert test_project.get_target("thing@mcu") is second.lib
+
+    def test_the_project_method_forwards_the_environment(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, _mcu = two_envs
+        self._source(_make_subdir(test_project, "sub", self.SUB))
+
+        ns = test_project.add_subdirectory("sub", env=host)
+
+        assert ns.lib.env is host
+
+    def test_a_nested_inclusion_inherits_the_environment(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, _mcu = two_envs
+        self._source(_make_subdir(test_project, "sub/inner", self.SUB))
+        _make_subdir(
+            test_project,
+            "sub",
+            "from pcons.util.add_subdirectory import add_subdirectory\n"
+            "inner = add_subdirectory('inner')\n",
+        )
+
+        ns = add_subdirectory("sub", env=host)
+
+        assert ns.inner.lib.env is host
+
+    def test_an_inner_environment_wins_for_its_own_subtree(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, mcu = two_envs
+        self._source(_make_subdir(test_project, "sub/inner", self.SUB))
+        sub = _make_subdir(
+            test_project,
+            "sub",
+            "from pcons.core.project import Project\n"
+            "from pcons.util.add_subdirectory import add_subdirectory\n"
+            "project = Project('sub')\n"
+            "mcu = [e for e in project.top.environments if e.name == 'mcu'][0]\n"
+            "inner = add_subdirectory('inner', env=mcu)\n"
+            "after = project.parent.default_environment\n"
+            "lib = project.StaticLibrary('thing', after, sources=['src/thing.c'])\n",
+        )
+        self._source(sub)
+
+        ns = add_subdirectory("sub", env=host)
+
+        assert ns.inner.lib.env is mcu
+        assert ns.after is host
+        assert ns.lib.env is host
+
+    def test_the_environment_is_restored_after_the_inclusion(
+        self, test_project: Project, two_envs
+    ) -> None:
+        _host, mcu = two_envs
+        self._source(_make_subdir(test_project, "sub", self.SUB))
+
+        add_subdirectory("sub", env=mcu)
+
+        assert test_project.default_environment is test_project.environments[0]
+
+    def test_an_exception_in_the_sub_script_restores_the_environment(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, _mcu = two_envs
+        _make_subdir(test_project, "sub", "raise RuntimeError('boom')\n")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            add_subdirectory("sub", env=host)
+
+        assert test_project.default_environment is test_project.environments[0]
+
+    def test_without_an_environment_nothing_is_overridden(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, _mcu = two_envs
+        self._source(_make_subdir(test_project, "sub", self.SUB))
+
+        ns = add_subdirectory("sub")
+
+        assert ns.lib.env is host
+        assert test_project.default_environment is host
+
+    def test_enter_subdir_without_an_environment_changes_nothing(
+        self, test_project: Project, two_envs
+    ) -> None:
+        host, _mcu = two_envs
+
+        with test_project._enter_subdir("sub"):
+            assert test_project.default_environment is host
+        assert test_project.default_environment is host
+
+    def test_a_nested_enter_subdir_keeps_the_outer_environment(
+        self, test_project: Project, two_envs
+    ) -> None:
+        _host, mcu = two_envs
+
+        with test_project._enter_subdir("sub", env=mcu):
+            with test_project._enter_subdir("inner"):
+                assert test_project.default_environment is mcu
+            assert test_project.default_environment is mcu
+        assert test_project.default_environment is test_project.environments[0]
+
+    def test_the_override_survives_a_project_with_its_own_environments(
+        self, test_project: Project, two_envs, gcc_toolchain
+    ) -> None:
+        """A sub-project registering an environment still gets the override."""
+        _host, mcu = two_envs
+
+        with test_project._enter_subdir("sub", env=mcu):
+            child = Project("child", root_dir=test_project.root_dir)
+            child.Environment(toolchain=gcc_toolchain, name="own")
+            assert child.default_environment is mcu

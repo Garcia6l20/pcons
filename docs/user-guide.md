@@ -874,6 +874,45 @@ Notes:
 See `examples/13_subdirs` for a worked example, including a library nested two
 levels down.
 
+#### One subdirectory, once per environment
+
+`add_subdirectory(..., env=...)` names the environment the included tree builds
+in. It is the default environment for the duration of the call, so the script
+above needs no change: its `default_environment` answers with the environment
+the caller passed. Include the same directory twice to build it twice:
+
+```python
+host = project.Environment(toolchain="c", name="host")
+host.build_prefix = "host"
+
+mcu = project.Environment(toolchain="gcc", name="mcu")
+mcu.build_prefix = "mcu"
+
+add_subdirectory("libfoo", env=host)   # build/host/libfoo/libfoo.a
+add_subdirectory("libfoo", env=mcu)    # build/mcu/libfoo/libfoo.a
+
+project.get_target("foo@host")
+```
+
+The rules:
+
+- **Both environments must be named and must differ in `build_prefix`.**
+  The names are what tell the two `foo` targets apart, and the prefixes are
+  what keep their output files apart. Without them the second inclusion is a
+  duplicate, and pcons says so, naming both definition sites.
+- **A nested `add_subdirectory()` inherits it.** Everything under the call
+  builds in that environment, however deep, unless an inner call passes its
+  own `env=`, which wins for its own subtree only.
+- **It overrides every other source**, including the environments the enclosing
+  project registered. The included script asks its parent, and the parent has
+  environments of its own, so filling in only for a project without any would
+  never fire.
+- **A script that makes its own environment is not overridden.** It said which
+  environment it builds in, and including it twice collides.
+
+See `examples/74_multi_env` for a worked example: `parity/` is described once
+and built for both environments, with each environment's flags.
+
 ### Multiple projects in one script
 
 Some builds contain more than one project: firmware plus the host

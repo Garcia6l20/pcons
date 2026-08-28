@@ -243,6 +243,7 @@ class Project(_ProjectBuilders):
     # innermost entry; created while it is empty with a top-level project
     # already present, it is an error.
     __parent_stack: list[Project] = []
+    __default_env: Env | None = None
 
     @staticmethod
     def _clear_tree() -> None:
@@ -250,6 +251,7 @@ class Project(_ProjectBuilders):
         Project.__current = None
         Project.__top_level = None
         Project.__parent_stack.clear()
+        Project.__default_env = None
         _cancel_direct_run_notice()
 
     def __init__(
@@ -505,22 +507,38 @@ class Project(_ProjectBuilders):
         return self._offset
 
     @contextmanager
-    def _enter_subdir(self, subdir: str | Path) -> Generator[None, None, None]:
-        """Context manager for entering a subdirectory in the project."""
+    def _enter_subdir(
+        self, subdir: str | Path, env: Env | None = None
+    ) -> Generator[None, None, None]:
+        """Context manager for entering a subdirectory in the project.
+
+        Args:
+            subdir: The directory to enter, relative to the current one.
+            env: Environment the entered scripts build in. While set, it is
+                what ``default_environment`` answers, anywhere in the tree,
+                so a sub script's ``project.parent.default_environment``
+                gets it instead of the parent's own first environment.
+                A nested entry inherits it and may override it for its own
+                subtree.
+        """
         old_subdir = self._subdir
         old_current = Project.__current
+        old_default_env = Project.__default_env
         self._subdir = subdir if old_subdir is None else f"{old_subdir}/{subdir}"
         # The entered project is the context: the subdirectory script's
         # Project.current() must mean this tree even when another sibling
         # was created more recently.
         Project.__current = self
         Project.__parent_stack.append(self)
+        if env is not None:
+            Project.__default_env = env
         try:
             yield
         finally:
             Project.__parent_stack.pop()
             self._subdir = old_subdir
             Project.__current = old_current
+            Project.__default_env = old_default_env
 
     def write_build_files(self, *, regen_command: Sequence[str] | None = None) -> None:
         """Write this project's build files, here and now.
@@ -574,7 +592,11 @@ class Project(_ProjectBuilders):
         BaseGenerator._generate_pending(self)
 
     def add_subdirectory(
-        self, subdir: str | Path, pick: list[str] | None = None
+        self,
+        subdir: str | Path,
+        pick: list[str] | None = None,
+        *,
+        env: Env | None = None,
     ) -> Any:
         """Run *subdir*'s pcons-build.py as part of this project.
 
@@ -584,7 +606,7 @@ class Project(_ProjectBuilders):
         """
         from pcons.util.add_subdirectory import add_subdirectory
 
-        return add_subdirectory(subdir, pick, project=self)
+        return add_subdirectory(subdir, pick, project=self, env=env)
 
     @property
     def config(self) -> Any:
@@ -824,10 +846,17 @@ class Project(_ProjectBuilders):
         enclosing project's, so a library nested several levels down still
         finds the toolchain the top-level build set up.
 
+        An ``add_subdirectory(..., env=...)`` in progress wins over both:
+        the caller named the environment the included tree builds in, and
+        the script it includes asks its parent, which has environments of
+        its own.
+
         Raises:
             ValueError: If no environment is registered here or in any
                 enclosing project.
         """
+        if Project.__default_env is not None:
+            return Project.__default_env
         project: Project | None = self
         while project is not None:
             if project._environments:

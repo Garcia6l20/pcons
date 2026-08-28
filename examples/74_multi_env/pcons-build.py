@@ -15,6 +15,9 @@ What it shows:
 - `env.archive_directory` and `env.runtime_directory`, placing the artifacts by
   kind below it. The toolchain still decides "lib", ".a" and ".exe".
 - Two targets sharing a name, told apart by their environments.
+- `add_subdirectory(env=...)`, which includes one directory once per
+  environment: `parity/` is described once and built for both, and its script
+  never names an environment.
 - `checksum@host`, the spelling that names one of them, read by
   `project.get_target`, by `project.Default` and by `pcons build`. A link
   string stays a raw link token, so the target is passed as an object and
@@ -26,7 +29,7 @@ builds one variant per pcons run. This is one build, described once, targeting
 two environments at the same time.
 """
 
-from pcons import Project
+from pcons import Project, add_subdirectory
 
 project = Project("multi_env")
 
@@ -42,6 +45,10 @@ strict.runtime_directory = "bin"
 strict.cc.defines.append("STRICT")
 
 
+parity = {
+    env.name: add_subdirectory("parity", env=env).parity for env in (host, strict)
+}
+
 for env in (host, strict):
     lib = project.StaticLibrary("checksum", env, sources=["src/checksum.c"])
     lib.public.include_dirs.append(project.root_dir / "src")
@@ -49,5 +56,6 @@ for env in (host, strict):
 for env in (host, strict):
     app = project.Program("app", env, sources=["src/main.c"])
     app.link(project.get_target(f"checksum@{env.name}"))
+    app.link(parity[env.name])
 
 project.Default("app@host", "app@strict")
