@@ -871,6 +871,22 @@ Notes:
   build has no parent to take a toolchain from. `default_environment` searches
   enclosing projects, so a library nested several levels down still finds it.
 
+A subdirectory script imports Python modules sitting next to it, the way a root
+build script does:
+
+```python
+# libfoo/pcons-build.py
+import sources          # libfoo/sources.py
+```
+
+Its own directory comes first, so a module there shadows a same-named one beside
+the root script while the inclusion runs. Editing an imported module re-runs
+pcons, like editing the build script itself.
+
+Python caches modules by name across the whole run, so two subdirectories that
+each carry a `sources.py` share one: whichever is included first wins, silently.
+Give helper modules names that say where they belong, or put them in a package.
+
 See `examples/13_subdirs` for a worked example, including a library nested two
 levels down.
 

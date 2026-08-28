@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,58 @@ def _make_subdir(parent: Path | Project, name: str, content: str) -> Path:
     subdir.mkdir(parents=True, exist_ok=True)
     (subdir / "pcons-build.py").write_text(content)
     return subdir
+
+
+class TestSubdirectoryScriptImports:
+    """A subdirectory script reaches its own neighbours, like a root script does."""
+
+    def test_it_imports_a_module_beside_it(self, test_project: Project) -> None:
+        subdir = _make_subdir(
+            test_project, "child", "import helper\nvalue = helper.V\n"
+        )
+        (subdir / "helper.py").write_text("V = 'from the child'\n")
+
+        ns = add_subdirectory("child")
+
+        assert ns.value == "from the child"
+
+    def test_a_nested_script_imports_its_own(self, test_project: Project) -> None:
+        outer = _make_subdir(
+            test_project,
+            "outer",
+            "import outer_helper\n"
+            "from pcons.util.add_subdirectory import add_subdirectory\n"
+            "inner = add_subdirectory('inner')\n"
+            "value = (outer_helper.V, inner.value)\n",
+        )
+        (outer / "outer_helper.py").write_text("V = 'outer'\n")
+        inner = _make_subdir(
+            outer, "inner", "import inner_helper\nvalue = inner_helper.V\n"
+        )
+        (inner / "inner_helper.py").write_text("V = 'inner'\n")
+
+        ns = add_subdirectory("outer")
+
+        assert ns.value == ("outer", "inner")
+
+    def test_the_path_is_restored(self, test_project: Project) -> None:
+        _make_subdir(test_project, "child", "x = 1\n")
+        before = list(sys.path)
+
+        add_subdirectory("child")
+
+        assert sys.path == before
+
+    def test_the_path_is_restored_when_the_script_raises(
+        self, test_project: Project
+    ) -> None:
+        _make_subdir(test_project, "child", "raise RuntimeError('boom')\n")
+        before = list(sys.path)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            add_subdirectory("child")
+
+        assert sys.path == before
 
 
 class TestAddSubdirectory:

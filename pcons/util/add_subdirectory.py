@@ -1,4 +1,5 @@
 import runpy
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import overload
@@ -93,7 +94,14 @@ def add_subdirectory(
     project.add_configure_dependency(script)
 
     with project._enter_subdir(subdir, env=env):
-        module = runpy.run_path(str(script), run_name=RUN_NAME)
+        # The script reaches its own neighbours the way a root build script
+        # does, which the CLI arranges for that one.
+        old_path = sys.path.copy()
+        sys.path.insert(0, str(subdir_path))
+        try:
+            module = runpy.run_path(str(script), run_name=RUN_NAME)
+        finally:
+            sys.path[:] = old_path
         if pick is not None:
             return tuple(module[name] for name in pick)
         else:
