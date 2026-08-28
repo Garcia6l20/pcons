@@ -29,6 +29,38 @@ def _object_paths(target) -> set[str]:
     return {node.path.as_posix() for node in target.intermediate_nodes}
 
 
+_WINDOWS_SUFFIXES = {"static_library": ".lib", "shared_library": ".dll"}
+
+
+@pytest.fixture
+def windows_toolchain(gcc_toolchain, monkeypatch):
+    """The gcc toolchain, naming its outputs the way MSVC does.
+
+    Patched on the instance rather than subclassed: `_gen_stubs` scrapes
+    `BaseToolchain.__subclasses__()`, so a toolchain class defined here would
+    leak into the generated preset names and fail the stub freshness test.
+    """
+    monkeypatch.setattr(gcc_toolchain, "get_output_prefix", lambda target_type: "")
+    monkeypatch.setattr(
+        gcc_toolchain,
+        "get_output_suffix",
+        lambda target_type: _WINDOWS_SUFFIXES.get(target_type, ".exe"),
+    )
+    return gcc_toolchain
+
+
+def _outputs(target) -> dict:
+    return target.output_nodes[0]._build_info["outputs"]
+
+
+def _primary_path(target) -> str:
+    return _outputs(target)["primary"]["path"].as_posix()
+
+
+def _import_lib_path(target) -> str:
+    return _outputs(target)["import_lib"]["path"].as_posix()
+
+
 class TestBuildPrefix:
     def test_moves_outputs_and_objects(self, tmp_path, source, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
@@ -222,3 +254,72 @@ class TestWindowsImportLibrary:
         outputs = shared.output_nodes[0]._build_info["outputs"]
         assert outputs["primary"]["path"].as_posix() == "build/win/bin/libs.so"
         assert outputs["import_lib"]["path"].as_posix() == "build/win/lib/libs.lib"
+
+    def test_it_follows_the_dll_with_no_archive_directory(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/foo.dll"
+        assert _import_lib_path(shared) == "build/foo.lib"
+
+    def test_the_archive_directory_takes_it_from_the_dll(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        env.archive_directory = "lib"
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/foo.dll"
+        assert _import_lib_path(shared) == "build/lib/foo.lib"
+
+    def test_a_subdirectory_in_output_prefix_is_kept(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+        shared.output_prefix = "mcu/"
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/mcu/foo.dll"
+        assert _import_lib_path(shared) == "build/mcu/foo.lib"
+
+    def test_output_prefix_nests_below_the_archive_directory(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        env.archive_directory = "lib"
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+        shared.output_prefix = "mcu/"
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/mcu/foo.dll"
+        assert _import_lib_path(shared) == "build/lib/mcu/foo.lib"
+
+    def test_other_platforms_have_no_outputs_key(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        env.archive_directory = "lib"
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+
+        monkeypatch.setattr("sys.platform", "linux")
+        project.resolve()
+
+        assert "outputs" not in shared.output_nodes[0]._build_info

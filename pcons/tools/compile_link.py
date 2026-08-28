@@ -9,7 +9,7 @@ protocol; the core resolver dispatches to it via the builder registry.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pcons.core.debug import is_enabled, trace, trace_value
@@ -732,8 +732,9 @@ class CompileLinkFactory:
         if sys.platform == "win32":
             # The import library is an archive, and CMake places it with the
             # other archives rather than beside the DLL.
+            import_name = str(PurePosixPath(lib_name).with_suffix(".lib"))
             import_lib_path = self._output_path(
-                target, env, f"{lib_path.stem}.lib", "static_library"
+                target, env, import_name, "static_library"
             )
             lib_node._build_info["outputs"] = {
                 "primary": {"path": lib_path, "suffix": lib_path.suffix},
