@@ -639,6 +639,20 @@ class TestCloneBuildDir:
 
 
 class TestEnvironmentName:
+    def test_the_property_setter_delegates(self, tmp_path) -> None:
+        """Reached through the descriptor: `__setattr__` intercepts every
+        normal assignment, so the setter exists only for type checkers and
+        must not be a second, unvalidated implementation.
+        """
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(name="host")
+
+        Environment.name.fset(env, "other")
+        assert env.name == "other"
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            Environment.name.fset(env, "bad@name")
+
     def test_name_is_settable_after_construction(self, test_project):  # noqa: F811
         env = test_project.Environment(name="mcu")
         env.name = "other"

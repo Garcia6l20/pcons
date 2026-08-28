@@ -78,6 +78,32 @@ class TestQmlSingletons:
         assert "Theme 1.0 Theme.qml" in qmldir
         assert "singleton" not in qmldir
 
+    @pytest.mark.parametrize(
+        ("name", "body"),
+        [("empty", ""), ("pragmas", "pragma ComponentBehavior: Bound\n")],
+    )
+    def test_a_file_with_no_type_body_is_not_a_singleton(
+        self, qml_project, tmp_path, name, body
+    ):
+        qmldir = self._qmldir(qml_project, tmp_path, body)
+
+        assert "singleton" not in qmldir
+
+    def test_a_file_that_cannot_be_read_is_not_a_singleton(self, qml_project, tmp_path):
+        """A qml_files entry the build generates does not exist yet."""
+        env = cxx_env_with_qt(qml_project)
+        qml_project.QtQmlModule(
+            "ui",
+            env,
+            uri="com.example.demo",
+            qml_files=["qml/Main.qml", "qml/Generated.qml"],
+        )
+        generate_ninja(qml_project)
+
+        qmldir = (tmp_path / "build" / "qt.ui" / "qmldir").read_text()
+        assert "Generated 1.0 Generated.qml" in qmldir
+        assert "singleton" not in qmldir
+
     def test_the_qml_files_are_configure_dependencies(self, qml_project, tmp_path):
         self._qmldir(qml_project, tmp_path, "import QtQml\nQtObject {}\n")
 

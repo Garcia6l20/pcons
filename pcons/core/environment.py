@@ -537,10 +537,11 @@ class Environment(_EnvironmentStubs):
 
     @name.setter
     def name(self, value: str | None) -> None:
-        """Never runs: ``__setattr__`` takes the assignment first, and
-        validates it. Here so the property stays read-write to type checkers.
+        """Never runs: ``__setattr__`` takes the assignment first. Here so the
+        property stays read-write to type checkers, and delegating so it cannot
+        drift from the assignment that does run.
         """
-        self._name = value
+        setattr(self, "name", value)  # noqa: B010
 
     def get(self, name: str, default: Any = None) -> Any:
         """Get a variable or tool with a default."""

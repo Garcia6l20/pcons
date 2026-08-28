@@ -209,6 +209,25 @@ class TestSubdirectoryScriptImports:
         deps = {Path(p).name for p in test_project.configure_dependencies}
         assert "helper.py" in deps
 
+    def test_an_unresolvable_origin_is_left_alone(
+        self, test_project: Project, monkeypatch
+    ) -> None:
+        """A path that cannot be resolved is skipped, not fatal."""
+        from pcons.util import add_subdirectory as module
+
+        subdir = _make_subdir(test_project, "child", "import helper\nx = helper.V\n")
+        (subdir / "helper.py").write_text("V = 1\n")
+
+        def raising(_module: object) -> list[Path]:
+            raise OSError("no")
+
+        monkeypatch.setattr(module, "_module_origins", raising)
+
+        ns = add_subdirectory("child")
+
+        assert ns.x == 1
+        sys.modules.pop("helper", None)
+
     def test_the_path_is_restored(self, test_project: Project) -> None:
         _make_subdir(test_project, "child", "x = 1\n")
         before = list(sys.path)
