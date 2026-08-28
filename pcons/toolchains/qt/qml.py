@@ -178,27 +178,20 @@ class QtQmlModuleBuilder:
         # ---- C++ type registration (only when there are moc'ed types) ----
         registrar_node: Node | None = None
         qmltypes_name = f"{name}.qmltypes"
-        build_dir = Path(qt_env.get("build_dir", "build"))
-        try:
-            qt_dir_rel = qt_dir.relative_to(build_dir)
-        except ValueError:
-            qt_dir_rel = qt_dir
+        resolver = project._path_resolver
         # Both moc modes emit JSON sidecars: QML_ELEMENT in a header
         # (moc_X.cpp.json) or in a self-mocing .cpp (X.moc.json).
         moc_output_nodes = [*info.moc_header_nodes, *info.dot_moc_nodes]
         if moc_output_nodes:
-            # Sidecars are named relative to the build dir (PathToken
-            # path_type="build" expects build-relative paths).
-            json_tokens = []
-            for node in moc_output_nodes:
-                node_path = _source_path(node)
-                try:
-                    rel = node_path.relative_to(build_dir)
-                except ValueError:
-                    rel = node_path
-                json_tokens.append(
-                    PathToken(path=f"{rel.as_posix()}.json", path_type="build")
+            # Sidecars are named as the build tool sees them (PathToken
+            # path_type="build" renders verbatim).
+            json_tokens = [
+                PathToken(
+                    path=f"{resolver.make_execution_relative(_source_path(node))}.json",
+                    path_type="build",
                 )
+                for node in moc_output_nodes
+            ]
             metatypes = qt_env.qt.CollectJson(
                 qt_dir / f"{name}_metatypes.json", moc_output_nodes
             )[0]
@@ -215,7 +208,7 @@ class QtQmlModuleBuilder:
                     "QMLMAJOR": major,
                     "QMLMINOR": minor,
                     "QMLTYPES": PathToken(
-                        path=(qt_dir_rel / qmltypes_name).as_posix(),
+                        path=resolver.make_execution_relative(qt_dir / qmltypes_name),
                         path_type="build",
                     ),
                     "QMLFOREIGN": (

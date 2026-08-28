@@ -26,6 +26,32 @@ def qml_project(tmp_path, monkeypatch):
     return Project("qmltest", root_dir=tmp_path, build_dir=tmp_path / "build")
 
 
+class TestQtQmlModuleUnderABuildPrefix:
+    """An environment's `build_prefix` reaches the moc sidecar paths.
+
+    The build tool runs in the top-level build directory, so the paths the
+    commands name carry the prefix. Relativizing against the environment's own
+    build directory subtracts it and moc cannot open the sidecars.
+    """
+
+    def test_the_sidecar_paths_carry_the_prefix(self, qml_project):
+        env = cxx_env_with_qt(qml_project)
+        env.build_prefix = "host"
+        qml_project.QtQmlModule(
+            "ui",
+            env,
+            uri="com.example.demo",
+            qml_files=["qml/Main.qml"],
+            sources=["src/backend.cpp"],
+        )
+
+        content = generate_ninja(qml_project)
+
+        assert "  JSONFILES = host/qt.ui/src/moc_backend.cpp.json\n" in content
+        assert "  QMLTYPES = host/qt.ui/ui.qmltypes\n" in content
+        assert "build host/qt.ui/src/moc_backend.cpp:" in content
+
+
 class TestQtQmlModule:
     def test_full_pipeline(self, qml_project, tmp_path):
         env = cxx_env_with_qt(qml_project)
