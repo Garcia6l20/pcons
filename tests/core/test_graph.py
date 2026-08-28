@@ -269,3 +269,67 @@ class TestSameShortNameAcrossSubprojects:
 
         assert util1_out in nodes
         assert util2_out in nodes
+
+
+class TestSameNameInTwoEnvironments:
+    """Two targets of one project may share a name when their environments differ.
+
+    ``qualified_name`` carries ``@env``, which is what keeps them apart in the
+    graph. Keyed on the bare name they would collapse into one entry.
+    """
+
+    def _common(self, project, gcc_toolchain, env_name):
+        env = project.Environment(toolchain=gcc_toolchain, name=env_name)
+        return project.StaticLibrary("common", env)
+
+    def test_topological_sort_keeps_both(self, tmp_path, gcc_toolchain):
+        project = Project("t", root_dir=tmp_path)
+        mcu = self._common(project, gcc_toolchain, "mcu")
+        host = self._common(project, gcc_toolchain, "host")
+        mcu.private.link_libs.append(host)
+
+        result = topological_sort_targets([mcu, host])
+
+        assert result == [host, mcu]
+
+    def test_collect_build_order_keeps_both(self, tmp_path, gcc_toolchain):
+        project = Project("t", root_dir=tmp_path)
+        mcu = self._common(project, gcc_toolchain, "mcu")
+        host = self._common(project, gcc_toolchain, "host")
+        mcu.private.link_libs.append(host)
+
+        assert collect_build_order(mcu) == [host, mcu]
+
+    def test_sort_reports_a_cycle_with_both_qualified_names(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("t", root_dir=tmp_path)
+        a = project.StaticLibrary(
+            "a", project.Environment(toolchain=gcc_toolchain, name="mcu")
+        )
+        b = project.StaticLibrary(
+            "b", project.Environment(toolchain=gcc_toolchain, name="host")
+        )
+        a.private.link_libs.append(b)
+        b.private.link_libs.append(a)
+
+        with pytest.raises(DependencyCycleError) as excinfo:
+            topological_sort_targets([a, b])
+
+        assert set(excinfo.value.cycle) == {"t::a@mcu", "t::b@host"}
+
+    def test_detect_cycles_reports_both_qualified_names(self, tmp_path, gcc_toolchain):
+        project = Project("t", root_dir=tmp_path)
+        a = project.StaticLibrary(
+            "a", project.Environment(toolchain=gcc_toolchain, name="mcu")
+        )
+        b = project.StaticLibrary(
+            "b", project.Environment(toolchain=gcc_toolchain, name="host")
+        )
+        a.private.link_libs.append(b)
+        b.private.link_libs.append(a)
+
+        cycles = detect_cycles_in_targets([a, b])
+
+        assert len(cycles) == 1
+        assert set(cycles[0]) == {"t::a@mcu", "t::b@host"}

@@ -26,40 +26,33 @@ def topological_sort_targets(targets: list[Target]) -> list[Target]:
     if not targets:
         return []
 
-    # Keyed on identity: neither the bare name nor project::name is unique.
-    # Two (sub)projects may share a short name, and inside one project two
-    # targets may share a name when their environments differ.
-    dependents: dict[int, set[int]] = {id(t): set() for t in targets}
-    in_degree: dict[int, int] = {id(t): 0 for t in targets}
-    target_map: dict[int, Target] = {id(t): t for t in targets}
+    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
+    dependents: dict[str, set[str]] = {name: set() for name in target_map}
+    in_degree: dict[str, int] = dict.fromkeys(target_map, 0)
 
     for target in targets:
         for dep in target.dependencies:
-            if id(dep) in dependents:
-                dependents[id(dep)].add(id(target))
-                in_degree[id(target)] += 1
+            if dep.qualified_name in dependents:
+                dependents[dep.qualified_name].add(target.qualified_name)
+                in_degree[target.qualified_name] += 1
 
     # Start with targets that have no dependencies
-    queue = deque(key for key, count in in_degree.items() if count == 0)
+    queue = deque(name for name, count in in_degree.items() if count == 0)
     result: list[Target] = []
 
     while queue:
-        key = queue.popleft()
-        result.append(target_map[key])
+        name = queue.popleft()
+        result.append(target_map[name])
 
         # Reduce in-degree for all dependents
-        for dependent in dependents[key]:
+        for dependent in dependents[name]:
             in_degree[dependent] -= 1
             if in_degree[dependent] == 0:
                 queue.append(dependent)
 
     # If we didn't process all targets, there's a cycle
     if len(result) != len(targets):
-        cycle_nodes = [
-            target_map[key].qualified_name
-            for key, count in in_degree.items()
-            if count > 0
-        ]
+        cycle_nodes = [name for name, count in in_degree.items() if count > 0]
         raise DependencyCycleError(cycle_nodes)
 
     return result
@@ -72,12 +65,11 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
         List of cycles, each a list of target names; empty if none.
     """
     cycles: list[list[str]] = []
-    # Keyed on identity, like topological_sort_targets.
-    target_map: dict[int, Target] = {id(t): t for t in targets}
+    target_map: dict[str, Target] = {t.qualified_name: t for t in targets}
 
     # Colors: 0=white (unvisited), 1=gray (in progress), 2=black (done)
-    colors: dict[int, int] = {id(t): 0 for t in targets}
-    path: list[int] = []
+    colors: dict[str, int] = dict.fromkeys(target_map, 0)
+    path: list[str] = []
 
     def target_deps(target: Target) -> list[Target]:
         # Include implicit target deps from target.depends(other_target):
@@ -89,33 +81,28 @@ def detect_cycles_in_targets(targets: list[Target]) -> list[list[str]]:
             *target._implicit_target_deps_output_only,
         ]
 
-    def dfs(key: int) -> None:
-        colors[key] = 1  # Gray - in progress
-        path.append(key)
+    def dfs(name: str) -> None:
+        colors[name] = 1  # Gray - in progress
+        path.append(name)
 
-        target = target_map.get(key)
-        if target:
-            for dep in target_deps(target):
-                dep_key = id(dep)
-                if dep_key not in colors:
-                    # External dependency, skip
-                    continue
-                if colors[dep_key] == 1:
-                    # Found a back edge - there's a cycle
-                    cycle_start = path.index(dep_key)
-                    cycles.append(
-                        [target_map[k].qualified_name for k in path[cycle_start:]]
-                        + [target_map[dep_key].qualified_name]
-                    )
-                elif colors[dep_key] == 0:
-                    dfs(dep_key)
+        for dep in target_deps(target_map[name]):
+            dep_name = dep.qualified_name
+            if dep_name not in colors:
+                # External dependency, skip
+                continue
+            if colors[dep_name] == 1:
+                # Found a back edge - there's a cycle
+                cycle_start = path.index(dep_name)
+                cycles.append([*path[cycle_start:], dep_name])
+            elif colors[dep_name] == 0:
+                dfs(dep_name)
 
         path.pop()
-        colors[key] = 2  # Black - done
+        colors[name] = 2  # Black - done
 
-    for target in targets:
-        if colors[id(target)] == 0:
-            dfs(id(target))
+    for name in target_map:
+        if colors[name] == 0:
+            dfs(name)
 
     return cycles
 
