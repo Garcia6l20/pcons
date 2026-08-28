@@ -7660,3 +7660,46 @@ class TestBuildRegeneratesForANewVariable:
         _invoke("--watch", flag)
 
         assert ran == [flag]
+
+
+class TestTheCacheIsOpenedOnce:
+    """The CLI reads `pcons_cache.json` through one instance per directory.
+
+    A run that reads the persisted variables before generating and writes them
+    after would otherwise hold two copies of the file, and persist from the one
+    that never saw the other's writes.
+    """
+
+    def test_the_same_directory_comes_back_as_one_instance(
+        self, tmp_path: Path
+    ) -> None:
+        import pcons.cli as cli
+
+        cli._drop_open_caches()
+        opened = cli._open_cache(tmp_path)
+
+        assert cli._open_cache(tmp_path) is opened
+        assert cli._open_cache(tmp_path / "sibling") is not opened
+
+    def test_a_run_of_the_script_drops_what_it_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The script writes the same file through its own singleton."""
+        import pcons.cli as cli
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pcons-build.py").write_text(
+            "from pathlib import Path\n"
+            "from pcons import Project\n"
+            "Project('v', root_dir=Path(__file__).parent)\n"
+        )
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        before = cli._open_cache(build_dir)
+
+        assert _invoke("generate", "URL=from-cli").exit_code == 0
+
+        after = cli._open_cache(build_dir)
+        assert after is not before
+        assert after.get("vars") == {"URL": "from-cli"}
+        assert before.get("vars") is None

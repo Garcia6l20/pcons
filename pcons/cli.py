@@ -438,14 +438,12 @@ def _persist_run_settings_to_projects(
     own — relative to its build directory, so completion under
     ``-B <sibling's dir>`` offers what that directory can build.
     """
-    from pcons.core.cache import BuildCache
-
     cli_dir = os.path.normcase(os.path.normpath(cli_build_dir.absolute()))
     for project in projects:
         project_dir = project._effective_output_dir()
         if os.path.normcase(str(project_dir)) == cli_dir:
             continue
-        cache = BuildCache(project_dir)
+        cache = _open_cache(project_dir)
         _persist_run_settings(
             cache,
             variables,
@@ -539,7 +537,7 @@ def run_script(
     # one place: this run's command line > environment > persisted cache > default.
     # The core readers (get_var/get_variant/Generator) only see the PCONS_* env
     # vars set from these values below.
-    cache = pcons.core.cache.BuildCache(build_dir)
+    cache = _open_cache(build_dir)
     current_source = str(script_path.parent.absolute())
     recorded_source = cache.get("source_dir")
     if isinstance(recorded_source, str) and recorded_source != current_source:
@@ -788,6 +786,7 @@ def run_script(
                 os.environ.pop(key, None)
         # PCONS_BUILD_DIR is restored above; drop the singleton bound to it.
         pcons.core.cache.reset_cache()
+        _drop_open_caches()
 
 
 def _find_ninja(override: str | None = None) -> list[str] | None:
@@ -1254,9 +1253,7 @@ def _run_build_tool(
         # Xcode picks the configuration at build time; fall back to the cached
         # variant so a bare build matches what was generated, not Release.
         if variant is None:
-            import pcons.core.cache
-
-            cached = pcons.core.cache.BuildCache(build_dir).get("variant")
+            cached = _open_cache(build_dir).get("variant")
             variant = cached if isinstance(cached, str) else None
         return run_xcodebuild(
             build_dir,
@@ -1517,11 +1514,34 @@ def _clean(build_dir: Path, *, everything: bool, ninja: str | None) -> int:
         return 1
 
 
+_open_caches: dict[str, BuildCache] = {}
+
+
 def _open_cache(build_dir: Path) -> BuildCache:
-    """The build directory's cache. Reads the file; never runs the script."""
+    """The build directory's cache. Reads the file; never runs the script.
+
+    One instance per directory per invocation, so a run that reads before
+    generating and writes after does not work on two copies of the file. The
+    key is a directory rather than nothing because a multi-project run reaches
+    several: it mirrors the settings into every sibling build directory, and
+    builds in each of them.
+
+    Dropped by :func:`_drop_open_caches` once a build script has run: the
+    script writes the same file through its own singleton, and an instance
+    held across that would answer from what it read beforehand.
+    """
     from pcons.core.cache import BuildCache
 
-    return BuildCache(build_dir)
+    key = os.path.normcase(os.path.normpath(str(build_dir.absolute())))
+    cache = _open_caches.get(key)
+    if cache is None:
+        cache = _open_caches[key] = BuildCache(build_dir)
+    return cache
+
+
+def _drop_open_caches() -> None:
+    """Forget the opened caches, so the next read comes from the file."""
+    _open_caches.clear()
 
 
 def _cache_path(build_dir: Path) -> int:
@@ -2014,6 +2034,8 @@ Docs:    https://pcons.readthedocs.io/
 @jobs_option
 @pass_pcons_context
 def cli(ctx: PconsContext, **declared_but_unused: object) -> None:
+    _drop_open_caches()
+
     # Before any command: a script that did pcons work and only then called the
     # CLI did so without a command line, so whatever it decided was decided on
     # the wrong values. Checked here rather than where the script is run, so a
