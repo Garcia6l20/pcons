@@ -7604,3 +7604,59 @@ class TestBuildRegeneratesForANewVariable:
         monkeypatch.setattr("pcons.cli._generate", refuse)
 
         assert _invoke("build").exit_code == 0
+
+    def test_a_repeated_value_skips_the_regeneration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The persisted value already matches, so nothing is left to re-read."""
+        self._project(tmp_path, monkeypatch)
+        assert _invoke("build", "URL=from-cli").exit_code == 0
+
+        def refuse(*a: object, **k: object) -> tuple[int, list[object]]:
+            raise AssertionError("regenerated for a value already persisted")
+
+        monkeypatch.setattr("pcons.cli._generate", refuse)
+
+        assert _invoke("build", "URL=from-cli").exit_code == 0
+
+    def test_the_catch_all_watch_forces_its_first_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`pcons --watch URL=x` has its own build call, away from `pcons build`."""
+        import pcons.cli as cli
+
+        ninja_file = self._project(tmp_path, monkeypatch)
+        generated: list[object] = []
+        real_generate = cli._generate
+        monkeypatch.setattr(
+            cli,
+            "_generate",
+            lambda *a, **k: (generated.append(a), real_generate(*a, **k))[1],
+        )
+        monkeypatch.setattr(
+            cli, "_watch", lambda **kw: (kw["build"](), kw["build"]())[0][0]
+        )
+
+        assert _invoke("--watch", "URL=from-cli").exit_code == 0
+
+        assert "from-cli" in ninja_file.read_text()
+        assert len(generated) == 1
+
+    @pytest.mark.parametrize("flag", ["--reconfigure", "--fresh"])
+    def test_the_catch_all_watch_forces_a_configure_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+    ) -> None:
+        import pcons.cli as cli
+
+        self._project(tmp_path, monkeypatch)
+        ran: list[str] = []
+        monkeypatch.setattr(
+            cli, "_generate", lambda *a, **k: (ran.append(flag), (0, []))[1]
+        )
+        monkeypatch.setattr(
+            cli, "_watch", lambda **kw: (kw["build"](), kw["build"]())[0][0]
+        )
+
+        _invoke("--watch", flag)
+
+        assert ran == [flag]

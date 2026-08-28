@@ -1378,6 +1378,28 @@ def _route_targets(
     return [(p, routed[id(p)]) for p in projects if routed[id(p)]]
 
 
+def _forces_regeneration(
+    build_dir: Path,
+    variables: dict[str, str],
+    reconfigure: bool,
+    fresh: bool,
+) -> bool:
+    """Whether this invocation must regenerate even when the build files are fresh.
+
+    The staleness check compares mtimes, and a build variable or a configure
+    flag changes what the script would write without touching it. A variable
+    whose persisted value already matches changes nothing, so it does not force
+    the describe pass.
+    """
+    if reconfigure or fresh:
+        return True
+    if not variables:
+        return False
+    cached = _open_cache(build_dir).get("vars")
+    cached = cached if isinstance(cached, dict) else {}
+    return any(cached.get(name) != value for name, value in variables.items())
+
+
 def _build(
     build_dir: Path,
     *,
@@ -2291,7 +2313,7 @@ def cli_build(
     """Build targets, generating first if the build files are stale."""
     script = Path(build_script) if build_script else None
     variables, targets = parse_variables(list(extra))
-    pending_force = bool(variables) or reconfigure or fresh
+    pending_force = _forces_regeneration(build_dir, variables, reconfigure, fresh)
 
     # The projects from the last regeneration. A watch iteration whose build
     # files are fresh skips regeneration, and without these it would fall
@@ -3097,22 +3119,30 @@ def cli_default(
             known_projects[:] = regenerated
         return code, regenerated
 
+    pending_force = _forces_regeneration(build_dir, variables, reconfigure, fresh)
+
+    def build_once() -> tuple[int, list[Path]]:
+        nonlocal pending_force
+        force, pending_force = pending_force, False
+        return _build(
+            build_dir,
+            regenerate=regenerate,
+            projects=list(known_projects) or None,
+            script=script,
+            targets=targets or None,
+            jobs=jobs,
+            verbose=verbose,
+            ninja=ninja,
+            variant=variant,
+            force_regenerate=force,
+        )
+
     # _build generates on its own when the build files are stale, which is the
     # right entry point for a watch: it regenerates only when needed.
     if watch:
         ctx.exit(
             _watch(
-                build=lambda: _build(
-                    build_dir,
-                    regenerate=regenerate,
-                    projects=list(known_projects) or None,
-                    script=script,
-                    targets=targets or None,
-                    jobs=jobs,
-                    verbose=verbose,
-                    ninja=ninja,
-                    variant=variant,
-                ),
+                build=build_once,
                 script=_resolve_build_script(script),
                 targets=targets,
                 ninja=ninja,
