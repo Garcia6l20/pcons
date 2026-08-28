@@ -225,9 +225,17 @@ module builds as an *object* target, so linking it into the app can't
 dead-strip the registrations — no plugin/backing-target split, no
 `Q_INIT_RESOURCE`, no import-path setup.
 
+A QML file starting with `pragma Singleton` is declared `singleton` in the
+qmldir, so the engine hands out the instance rather than the type. Nothing
+to pass: the pragma is read from the file, and editing one re-runs pcons so
+the qmldir keeps up. A generated QML file that does not exist yet when the
+build is described reads as not a singleton.
+
 Not yet included: `qmlcachegen` ahead-of-time QML compilation (the
 embedded QML runs through the normal engine path — functionally
 identical, slightly slower startup) and separate QML plugin libraries.
+`qml_files` entries are embedded under their base name, so a nested layout
+is flattened and two files with one base name collide.
 
 ## Translations
 

@@ -26,6 +26,65 @@ def qml_project(tmp_path, monkeypatch):
     return Project("qmltest", root_dir=tmp_path, build_dir=tmp_path / "build")
 
 
+class TestQmlSingletons:
+    """`pragma Singleton` has to reach the qmldir.
+
+    Without the keyword the engine resolves the name as a type rather than an
+    instance, so every property access through it is undefined at runtime while
+    the build stays green.
+    """
+
+    def _qmldir(self, project, tmp_path, body: str) -> str:
+        (tmp_path / "qml" / "Theme.qml").write_text(body)
+        env = cxx_env_with_qt(project)
+        project.QtQmlModule(
+            "ui",
+            env,
+            uri="com.example.demo",
+            qml_files=["qml/Main.qml", "qml/Theme.qml"],
+        )
+        generate_ninja(project)
+        return (tmp_path / "build" / "qt.ui" / "qmldir").read_text()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "pragma Singleton\nimport QtQml\nQtObject {}\n",
+            "\n\npragma Singleton\nimport QtQml\nQtObject {}\n",
+            "// the app's palette\npragma Singleton\nimport QtQml\nQtObject {}\n",
+            "/* the app's\n   palette */\npragma Singleton\nimport QtQml\n"
+            "QtObject {}\n",
+            "pragma ComponentBehavior: Bound\npragma Singleton\nimport QtQml\n"
+            "QtObject {}\n",
+            "pragma Singleton;\nimport QtQml\nQtObject {}\n",
+        ],
+    )
+    def test_the_pragma_is_found(self, qml_project, tmp_path, body):
+        qmldir = self._qmldir(qml_project, tmp_path, body)
+
+        assert "singleton Theme 1.0 Theme.qml" in qmldir
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "import QtQml\nQtObject {}\n",
+            "// pragma Singleton\nimport QtQml\nQtObject {}\n",
+            "import QtQml\npragma Singleton\nQtObject {}\n",
+        ],
+    )
+    def test_a_plain_file_stays_a_type(self, qml_project, tmp_path, body):
+        qmldir = self._qmldir(qml_project, tmp_path, body)
+
+        assert "Theme 1.0 Theme.qml" in qmldir
+        assert "singleton" not in qmldir
+
+    def test_the_qml_files_are_configure_dependencies(self, qml_project, tmp_path):
+        self._qmldir(qml_project, tmp_path, "import QtQml\nQtObject {}\n")
+
+        deps = {p.name for p in qml_project.configure_dependencies}
+        assert {"Main.qml", "Theme.qml"} <= deps
+
+
 class TestQtQmlModuleUnderABuildPrefix:
     """An environment's `build_prefix` reaches the moc sidecar paths.
 

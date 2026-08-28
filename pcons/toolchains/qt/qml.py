@@ -33,6 +33,7 @@ Q_INIT_RESOURCE or plugin import boilerplate is needed.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -110,6 +111,37 @@ def _qt_metatypes(project: Project, link: Sequence[Target]) -> list[Path]:
         for path in qt.metatypes_files()
         if any(path.name.startswith(f"qt6{module}_") for module in wanted)
     ]
+
+
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _declares_singleton(path: Path) -> bool:
+    """Whether a QML file declares itself a singleton.
+
+    ``pragma Singleton`` lives in the leading pragma block, above the imports,
+    so only that block is read: the first line that is not a comment and not a
+    pragma ends it. A file pcons cannot read yet, a generated one, reads as not
+    a singleton.
+
+    The engine resolves a type declared without ``singleton`` in the qmldir as a
+    type rather than an instance, so every property access through it is
+    undefined at runtime while the build stays green. That is why this is read
+    from the source rather than left to the author to declare twice.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in _BLOCK_COMMENT.sub(" ", text).splitlines():
+        statement = " ".join(line.split("//", 1)[0].split()).rstrip(";")
+        if not statement:
+            continue
+        if not statement.startswith("pragma"):
+            return False
+        if statement == "pragma Singleton":
+            return True
+    return False
 
 
 @builder(
@@ -230,8 +262,14 @@ class QtQmlModuleBuilder:
             qmldir_lines.append(f"typeinfo {qmltypes_name}")
         qmldir_lines.append(f"prefer :/qt/qml/{uri_path}/")
         for qml in qml_files:
-            stem = Path(qml).stem
-            qmldir_lines.append(f"{stem} {major}.{minor} {Path(qml).name}")
+            qml_path = Path(qml)
+            # The qmldir is written now, from the file's own content, so a
+            # pragma added later has to re-run pcons and not only rcc.
+            project.add_configure_dependency(root / qml_path)
+            kind = "singleton " if _declares_singleton(root / qml_path) else ""
+            qmldir_lines.append(
+                f"{kind}{qml_path.stem} {major}.{minor} {qml_path.name}"
+            )
         _write_if_changed(root / qt_dir / "qmldir", "\n".join(qmldir_lines) + "\n")
 
         # ---- resources under :/qt/qml/<uri>/ ---------------------------
