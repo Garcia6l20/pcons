@@ -1349,34 +1349,37 @@ _TARGETS_IN_EVERY_PROJECT = frozenset({"all", "test-build"})
 
 def _translate_env_tokens(
     tokens: list[str], lookup: Callable[[str], list[str] | None]
-) -> list[str] | None:
+) -> list[str]:
     """Replace every ``name@env`` token with the paths the build tool knows.
 
     Other tokens pass through: a build tool knows names pcons does not, file
-    paths among them. An unknown spelling is an error here rather than a token
-    handed on for the build tool to reject with a worse message.
+    paths among them. A token carrying an ``@`` that names no target passes
+    through too, since ``@`` is legal in a file name: the lookup logs why it
+    could not translate it, and the build tool decides whether the token means
+    something after all.
     """
     translated: list[str] = []
     for token in tokens:
-        if "@" not in token:
-            translated.append(token)
-            continue
-        paths = lookup(token)
-        if not paths:
-            return None
-        translated.extend(paths)
+        paths = lookup(token) if "@" in token else None
+        translated.extend(paths or [token])
     return translated
 
 
 def _project_env_lookup(project: Project) -> Callable[[str], list[str] | None]:
-    """Resolve a ``name@env`` spelling against a project that has been resolved."""
+    """Resolve a ``name@env`` spelling against a project that has been resolved.
+
+    A token that names no target is reported at debug level, not as an error:
+    the caller hands it to the build tool anyway, and ``@`` in a file path is
+    the common reason a lookup fails. A token that *does* name a target and
+    still yields nothing to build is a real error and says so.
+    """
     from pcons.core.node import FileNode
 
     def lookup(token: str) -> list[str] | None:
         try:
             target = project.get_target(token)
         except (KeyError, ValueError) as exc:
-            logger.error("%s", exc.args[0] if exc.args else exc)
+            logger.debug("%s", exc.args[0] if exc.args else exc)
             return None
         resolver = project._path_resolver
         paths = [
@@ -1393,15 +1396,24 @@ def _project_env_lookup(project: Project) -> Callable[[str], list[str] | None]:
 
 
 def _cached_env_lookup(build_dir: Path) -> Callable[[str], list[str] | None]:
-    """Resolve a ``name@env`` spelling from what the last generate recorded."""
-    from pcons.core.cache import BuildCache
+    """Resolve a ``name@env`` spelling from what the last generate recorded.
+
+    The recording is read once, through the invocation's own cache instance.
+    Reading it here rather than per token is safe because ``_build`` builds the
+    lookup only after any regeneration has run and dropped the open caches, so
+    this sees what that generation wrote.
+
+    An unknown spelling is reported at debug level: the caller hands the token
+    to the build tool anyway, and ``@`` is legal in a file path.
+    """
+    recorded = _open_cache(build_dir).get("env_targets")
+    recorded = recorded if isinstance(recorded, dict) else {}
 
     def lookup(token: str) -> list[str] | None:
-        recorded = BuildCache(build_dir).get("env_targets")
-        paths = recorded.get(token) if isinstance(recorded, dict) else None
+        paths = recorded.get(token)
         if not paths:
-            known = ", ".join(sorted(recorded)) if isinstance(recorded, dict) else ""
-            logger.error(
+            known = ", ".join(sorted(recorded))
+            logger.debug(
                 "no target named '%s' in %s%s",
                 token,
                 build_dir,
@@ -1428,7 +1440,7 @@ def _route_targets(
     if len(projects) == 1:
         # Pass through: ninja may know names pcons doesn't (file paths).
         tokens = _translate_env_tokens(targets, _project_env_lookup(projects[0]))
-        return None if tokens is None else [(projects[0], tokens)]
+        return [(projects[0], tokens)]
 
     from pcons.core.target import split_qualified_name
 
@@ -1502,8 +1514,6 @@ def _route_targets(
         if not routed[id(p)]:
             continue
         tokens = _translate_env_tokens(routed[id(p)], _project_env_lookup(p))
-        if tokens is None:
-            return None
         plan.append((p, tokens))
     return plan
 
@@ -1581,10 +1591,7 @@ def _build(
         # No regeneration ran: build the requested directory. With sibling
         # projects, -B scopes the build to the one owning that directory.
         if targets:
-            translated = _translate_env_tokens(targets, _cached_env_lookup(build_dir))
-            if translated is None:
-                return 1, [build_dir]
-            targets = translated
+            targets = _translate_env_tokens(targets, _cached_env_lookup(build_dir))
         return _run_build_tool(
             build_dir,
             targets=targets,

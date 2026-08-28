@@ -7346,16 +7346,50 @@ class TestEnvQualifiedTargets:
             (project, ["all", "mcu/lib/libcommon.a"])
         ]
 
-    def test_an_unknown_spelling_is_an_error(
+    def test_an_unknown_spelling_reaches_the_build_tool(
         self, tmp_path, gcc_toolchain, caplog
     ) -> None:
+        """A typo is not fatal here: the build tool gets the token as typed."""
         from pcons.cli import _route_targets
 
         project = self._project(tmp_path, gcc_toolchain)
 
-        with caplog.at_level(logging.ERROR):
-            assert _route_targets([project], ["common@arm"]) is None
+        with caplog.at_level(logging.DEBUG):
+            assert _route_targets([project], ["common@arm"]) == [
+                (project, ["common@arm"])
+            ]
         assert "common@arm" in caplog.text
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_a_path_containing_an_at_sign_passes_through(
+        self, tmp_path, gcc_toolchain, caplog
+    ) -> None:
+        """`@` is legal in a file name, and a build tool may know that file."""
+        from pcons.cli import _route_targets
+
+        project = self._project(tmp_path, gcc_toolchain)
+
+        with caplog.at_level(logging.DEBUG):
+            assert _route_targets([project], ["src/gen@v2.c"]) == [
+                (project, ["src/gen@v2.c"])
+            ]
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_a_project_with_no_named_environments_passes_it_through_too(
+        self, tmp_path, gcc_toolchain, caplog
+    ) -> None:
+        from pcons.cli import _route_targets
+        from pcons.core.project import Project
+
+        project = Project("p", root_dir=tmp_path)
+        project.Environment(toolchain=gcc_toolchain)
+        project.resolve()
+
+        with caplog.at_level(logging.DEBUG):
+            assert _route_targets([project], ["src/gen@v2.c"]) == [
+                (project, ["src/gen@v2.c"])
+            ]
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     def test_the_recorded_paths_are_what_a_later_build_uses(
         self, tmp_path, gcc_toolchain
@@ -7374,9 +7408,10 @@ class TestEnvQualifiedTargets:
 class TestEnvQualifiedFailures:
     """What `pcons build name@env` does when it cannot answer."""
 
-    def test_a_target_with_no_output_is_an_error(
+    def test_a_target_with_no_output_is_still_an_error(
         self, tmp_path, gcc_toolchain, caplog
     ) -> None:
+        """The name resolved, so this is a real error, not a path with an `@`."""
         from pcons.cli import _route_targets
         from pcons.core.project import Project
 
@@ -7386,13 +7421,15 @@ class TestEnvQualifiedFailures:
         project.resolve()
 
         with caplog.at_level(logging.ERROR):
-            assert _route_targets([project], ["empty@mcu"]) is None
+            assert _route_targets([project], ["empty@mcu"]) == [
+                (project, ["empty@mcu"])
+            ]
         assert "produces no output" in caplog.text
 
-    def test_one_failure_fails_the_whole_plan(
+    def test_an_untranslatable_token_still_reaches_its_owner(
         self, tmp_path, gcc_toolchain, caplog
     ) -> None:
-        """Several top-level projects: a token that cannot be translated stops it."""
+        """Several top-level projects: the plan holds, the token is handed on."""
         from pcons.cli import _route_targets
         from pcons.core.project import Project
 
@@ -7403,7 +7440,10 @@ class TestEnvQualifiedFailures:
         beta.resolve()
 
         with caplog.at_level(logging.ERROR):
-            assert _route_targets([alpha, beta], ["empty@mcu"]) is None
+            assert _route_targets([alpha, beta], ["empty@mcu"]) == [
+                (beta, ["empty@mcu"])
+            ]
+        assert "produces no output" in caplog.text
 
     def test_the_cache_answers_when_nothing_regenerated(self, tmp_path) -> None:
         from pcons.cli import _cached_env_lookup
@@ -7428,40 +7468,101 @@ class TestEnvQualifiedFailures:
             {"env_targets": {"common@mcu": ["mcu/lib/libcommon.a"]}}
         )
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.DEBUG):
             assert _cached_env_lookup(build_dir)("common@arm") is None
         assert "known: common@mcu" in caplog.text
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     def test_a_build_dir_that_recorded_nothing(self, tmp_path, caplog) -> None:
         from pcons.cli import _cached_env_lookup
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.DEBUG):
             assert _cached_env_lookup(tmp_path / "nowhere")("app@host") is None
         assert "known:" not in caplog.text
 
-    def test_the_build_stops_before_running_the_tool(
+    def test_the_build_hands_the_token_to_the_tool(
         self, tmp_path, monkeypatch, caplog
     ) -> None:
-        """No regeneration ran, and the cache cannot name the target."""
+        """No regeneration ran and the cache cannot name it: ninja decides."""
         import pcons.cli as cli_module
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         (build_dir / "build.ninja").write_text("# generated\n")
+        cli_module._drop_open_caches()
         monkeypatch.setattr(cli_module, "_needs_generation", lambda *a, **kw: False)
+        asked: list[list[str] | None] = []
         monkeypatch.setattr(
             cli_module,
             "_run_build_tool",
-            lambda *a, **kw: pytest.fail("the build tool must not run"),
+            lambda *a, **kw: (asked.append(kw["targets"]), 0)[1],
         )
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.DEBUG):
             code, dirs = cli_module._build(
                 build_dir,
                 regenerate=lambda: (0, []),
                 targets=["nope@host"],
             )
-        assert (code, dirs) == (1, [build_dir])
+        assert (code, dirs, asked) == (0, [build_dir], [["nope@host"]])
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_the_cache_is_read_once_for_every_token(self, tmp_path, monkeypatch):
+        """Three `name@env` tokens, one parse of `pcons_cache.json`."""
+        import pcons.cli as cli_module
+        from pcons.core.cache import BuildCache
+
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / "build.ninja").write_text("# generated\n")
+        BuildCache(build_dir).update(
+            {"env_targets": {"a@mcu": ["a.a"], "b@mcu": ["b.a"], "c@mcu": ["c.a"]}}
+        )
+        cli_module._drop_open_caches()
+
+        opened: list[object] = []
+        original_init = BuildCache.__init__
+
+        def counting_init(self, where):
+            opened.append(where)
+            original_init(self, where)
+
+        monkeypatch.setattr(BuildCache, "__init__", counting_init)
+        monkeypatch.setattr(cli_module, "_needs_generation", lambda *a, **kw: False)
+        asked: list[list[str] | None] = []
+        monkeypatch.setattr(
+            cli_module,
+            "_run_build_tool",
+            lambda *a, **kw: (asked.append(kw["targets"]), 0)[1],
+        )
+
+        code, _dirs = cli_module._build(
+            build_dir,
+            regenerate=lambda: (0, []),
+            targets=["a@mcu", "b@mcu", "c@mcu"],
+        )
+
+        assert (code, asked) == (0, [["a.a", "b.a", "c.a"]])
+        assert len(opened) == 1
+
+    def test_the_lookup_reads_what_the_last_generation_wrote(self, tmp_path) -> None:
+        """A generation drops the open caches, so the lookup re-reads the file."""
+        from pcons.cli import _cached_env_lookup, _drop_open_caches, _open_cache
+        from pcons.core.cache import BuildCache
+
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        BuildCache(build_dir).update({"env_targets": {"stale@mcu": ["stale.a"]}})
+        _drop_open_caches()
+        assert _open_cache(build_dir).get("env_targets") == {"stale@mcu": ["stale.a"]}
+
+        BuildCache(build_dir).update({"env_targets": {"fresh@mcu": ["fresh.a"]}})
+        _drop_open_caches()
+
+        lookup = _cached_env_lookup(build_dir)
+        assert lookup("fresh@mcu") == ["fresh.a"]
+        assert lookup("stale@mcu") is None
+        _drop_open_caches()
 
 
 class TestMergedEnvTargets:
