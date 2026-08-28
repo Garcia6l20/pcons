@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pcons import get_var
 from pcons.core.project import Project
 from pcons.util.add_subdirectory import add_subdirectory
 
@@ -20,6 +21,55 @@ def _make_subdir(parent: Path | Project, name: str, content: str) -> Path:
     subdir.mkdir(parents=True, exist_ok=True)
     (subdir / "pcons-build.py").write_text(content)
     return subdir
+
+
+class TestSubdirectoryVars:
+    """`vars=` configures what an inclusion reads with `get_var`."""
+
+    def test_the_script_reads_what_the_caller_passed(
+        self, test_project: Project
+    ) -> None:
+        _make_subdir(
+            test_project,
+            "child",
+            "from pcons import get_var\nvalue = get_var('FEATURE', True)\n",
+        )
+
+        ns = add_subdirectory("child", vars={"FEATURE": False})
+
+        assert ns.value is False
+
+    def test_two_inclusions_read_their_own(self, test_project: Project) -> None:
+        """The value is read by an imported module, at import time."""
+        subdir = _make_subdir(
+            test_project, "child", "import settings\nvalue = settings.FEATURE\n"
+        )
+        (subdir / "settings.py").write_text(
+            "from pcons import get_var\nFEATURE = get_var('FEATURE', True)\n"
+        )
+
+        off = add_subdirectory("child", vars={"FEATURE": False})
+        on = add_subdirectory("child", vars={"FEATURE": True})
+
+        assert (off.value, on.value) == (False, True)
+
+    def test_it_is_gone_afterwards(self, test_project: Project) -> None:
+        _make_subdir(test_project, "child", "x = 1\n")
+
+        add_subdirectory("child", vars={"FEATURE": False})
+
+        assert get_var("FEATURE", True) is True
+
+    def test_the_project_method_forwards_them(self, test_project: Project) -> None:
+        _make_subdir(
+            test_project,
+            "child",
+            "from pcons import get_var\nvalue = get_var('FEATURE', True)\n",
+        )
+
+        ns = test_project.add_subdirectory("child", vars={"FEATURE": False})
+
+        assert ns.value is False
 
 
 class TestSubdirectoryScriptImports:

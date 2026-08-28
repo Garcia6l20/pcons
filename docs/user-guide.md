@@ -914,6 +914,33 @@ add_subdirectory("libfoo", env=mcu)    # build/mcu/libfoo/libfoo.a
 project.get_target("foo@host")
 ```
 
+#### Configuring what you include
+
+`add_subdirectory(..., vars={...})` sets the build variables the included tree
+reads with `get_var`, for the duration of the call:
+
+```python
+add_subdirectory("libfoo", env=vendor_env, vars={
+    "LIBFOO_TESTS": False,
+    "LIBFOO_PYTHON": False,
+})
+```
+
+Values are spelled as Python, not as command-line strings: `False`, `2`,
+`Path("/opt")`. They shadow the command line, because a project vendoring a
+dependency is deciding how it builds, not offering a default. To let the user
+override one, say so:
+
+```python
+vars={"LIBFOO_PYTHON": get_var("LIBFOO_PYTHON", False)}
+```
+
+Names you do not mention keep whatever the command line gave them, and a nested
+`add_subdirectory()` keeps yours while overriding only the names it passes.
+
+This replaces setting `os.environ` before the call, which leaked into every
+later inclusion and lost to the command line rather than beating it.
+
 The rules:
 
 - **Both environments must be named and must differ in `build_prefix`.**

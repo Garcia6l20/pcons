@@ -1,5 +1,7 @@
 import runpy
 import sys
+from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import overload
@@ -7,6 +9,7 @@ from typing import overload
 from pcons.core.environment import Environment as Env
 from pcons.core.invocation import RUN_NAME
 from pcons.core.project import Project, _in_virtualenv
+from pcons.core.vars import VarValue, scoped_vars
 
 
 def _module_origins(module: object) -> list[Path]:
@@ -64,6 +67,7 @@ def add_subdirectory(
     *,
     project: Project | None = None,
     env: Env | None = None,
+    vars: Mapping[str, VarValue] | None = None,
 ) -> tuple: ...
 
 
@@ -74,6 +78,7 @@ def add_subdirectory(
     *,
     project: Project | None = None,
     env: Env | None = None,
+    vars: Mapping[str, VarValue] | None = None,
 ) -> SimpleNamespace: ...
 
 
@@ -83,6 +88,7 @@ def add_subdirectory(
     *,
     project: Project | None = None,
     env: Env | None = None,
+    vars: Mapping[str, VarValue] | None = None,
 ) -> tuple | SimpleNamespace:
     """Adds a subdirectory to the project.
 
@@ -123,6 +129,15 @@ def add_subdirectory(
 
             The two environments need different ``build_prefix`` values,
             and both must be named, or their targets collide.
+        vars: Build variables the included tree reads with ``get_var``, set for
+            the duration of the call. They shadow the command line, since the
+            caller is configuring what it includes rather than offering a
+            default; pass ``get_var(name, default)`` as a value to let the
+            command line back in::
+
+                add_subdirectory("libfoo", vars={"LIBFOO_PYTHON": False})
+
+            Names not mentioned keep whatever the command line gave them.
 
     Returns:
         - If ``pick`` is not specified, a ``SimpleNamespace`` whose attributes
@@ -148,7 +163,8 @@ def add_subdirectory(
         before = frozenset(sys.modules)
         sys.path.insert(0, str(subdir_path))
         try:
-            module = runpy.run_path(str(script), run_name=RUN_NAME)
+            with scoped_vars(vars) if vars else nullcontext():
+                module = runpy.run_path(str(script), run_name=RUN_NAME)
         finally:
             # Released first: a namespace package's search locations are
             # recomputed from sys.path, so they still name this directory.

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from pcons._cli_click import UserCommand, UserGroup
     from pcons.core._project_builder_stubs import _ProjectBuilders
     from pcons.core._toolchain_names import KnownToolchain
+    from pcons.core.vars import VarValue
     from pcons.tools.toolchain import Toolchain
 else:
     # At runtime, builder lookup goes through Project.__getattr__; the
@@ -597,6 +598,7 @@ class Project(_ProjectBuilders):
         pick: list[str] | None = None,
         *,
         env: Env | None = None,
+        vars: Mapping[str, VarValue] | None = None,
     ) -> Any:
         """Run *subdir*'s pcons-build.py as part of this project.
 
@@ -606,7 +608,7 @@ class Project(_ProjectBuilders):
         """
         from pcons.util.add_subdirectory import add_subdirectory
 
-        return add_subdirectory(subdir, pick, project=self, env=env)
+        return add_subdirectory(subdir, pick, project=self, env=env, vars=vars)
 
     @property
     def config(self) -> Any:
