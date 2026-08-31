@@ -319,3 +319,109 @@ class TestPackageNotFoundError:
         err = PackageNotFoundError("openssl", version=">=3.0")
         assert "openssl" in str(err)
         assert ">=3.0" in str(err)
+
+
+class CountingMockFinder(MockFinder):
+    """A MockFinder that records how many lookups reached it."""
+
+    def __init__(self, packages: dict[str, PackageDescription] | None = None) -> None:
+        super().__init__(packages)
+        self.calls = 0
+
+    def find(
+        self,
+        package_name: str,
+        version: str | None = None,
+        components: list[str] | None = None,
+    ) -> PackageDescription | None:
+        self.calls += 1
+        return super().find(package_name, version, components)
+
+
+class TestFindPackagePerEnvironment:
+    """A found package belongs to one environment, not to the project."""
+
+    def test_two_environments_get_two_targets(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        finder = CountingMockFinder({"zlib": _make_pkg("zlib")})
+        project.add_package_finder(finder)
+
+        for_mcu = project.find_package("zlib", env=mcu)
+        for_host = project.find_package("zlib", env=host)
+
+        assert for_mcu is not None
+        assert for_host is not None
+        assert for_mcu is not for_host
+        assert for_mcu.qualified_name.endswith("zlib@mcu")
+        assert for_host.qualified_name.endswith("zlib@host")
+        assert finder.calls == 2
+
+    def test_one_environment_twice_is_one_target(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        finder = CountingMockFinder({"zlib": _make_pkg("zlib")})
+        project.add_package_finder(finder)
+
+        first = project.find_package("zlib", env=mcu)
+        second = project.find_package("zlib", env=mcu)
+
+        assert first is second
+        assert finder.calls == 1
+
+    def test_no_environment_resolves_to_the_inherited_one(self) -> None:
+        """An omitted env must key the same slot the target inherits."""
+        project = Project("test")
+        host = project.Environment(name="host")
+        finder = CountingMockFinder({"zlib": _make_pkg("zlib")})
+        project.add_package_finder(finder)
+
+        implicit = project.find_package("zlib")
+        explicit = project.find_package("zlib", env=host)
+
+        assert implicit is explicit
+        assert finder.calls == 1
+
+    def test_a_named_and_an_unnamed_environment_collide(self) -> None:
+        project = Project("test")
+        unnamed = project.Environment()
+        named = project.Environment(name="host")
+        project.add_package_finder(MockFinder({"zlib": _make_pkg("zlib")}))
+
+        project.find_package("zlib", env=unnamed)
+
+        with pytest.raises(ValueError, match="already exists"):
+            project.find_package("zlib", env=named)
+
+    def test_a_negative_result_is_cached_per_environment(self) -> None:
+        """Not found in one environment says nothing about another."""
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        finder = CountingMockFinder({})
+        project.add_package_finder(finder)
+        missing = "nonexistent-pkg-12345"
+
+        assert project.find_package(missing, env=mcu, required=False) is None
+        assert finder.calls == 1
+
+        assert project.find_package(missing, env=host, required=False) is None
+        assert finder.calls == 2
+
+        assert project.find_package(missing, env=mcu, required=False) is None
+        assert finder.calls == 2
+
+    def test_the_system_conflict_is_per_environment(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        project.add_package_finder(
+            MockFinder({"doctest": _make_pkg("doctest", include_dirs=["/opt/dt"])})
+        )
+
+        project.find_package("doctest", env=mcu)
+        project.find_package("doctest", env=host, system=True)
+
+        with pytest.raises(ValueError, match="in environment 'mcu'"):
+            project.find_package("doctest", env=mcu, system=True)

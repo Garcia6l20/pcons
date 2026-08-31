@@ -13,7 +13,7 @@ import os
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, overload
 
 from pcons.core.builder_registry import BuilderRegistry
 from pcons.core.environment import Environment as Env
@@ -150,6 +150,21 @@ def _emit_direct_run_notice() -> None:
         "#a-build-script-that-runs-itself",
         program_name(_direct_run_notice["script"]),
     )
+
+
+class _PackageKey(NamedTuple):
+    """What makes two find_package() calls the same lookup.
+
+    ``env`` is an environment name rather than the environment itself: a
+    cross build and a host build must not share an answer, and two
+    environments with no name cannot be told apart at all.
+    """
+
+    name: str
+    env: str | None
+    version: str | None
+    components: tuple[str, ...]
+    system: bool
 
 
 def _refuse_duplicate(existing: Target, new: Target) -> None:
@@ -332,9 +347,7 @@ class Project(_ProjectBuilders):
         self._config = config
         self._resolved = False
         # None caches a negative find_package result for the key.
-        self._found_packages: dict[
-            tuple[str, str | None, tuple[str, ...], bool], Target | None
-        ] = {}
+        self._found_packages: dict[_PackageKey, Target | None] = {}
         self._package_finder_chain: Any = None  # Lazy-initialized FinderChain
         # Files the build description read while running: the generated build
         # files depend on these, so editing one re-runs pcons (see
@@ -1810,6 +1823,7 @@ class Project(_ProjectBuilders):
         self,
         name: str,
         *,
+        env: Env | None = None,
         version: str | None = None,
         components: Sequence[str] | None = None,
         required: Literal[True] = True,
@@ -1821,6 +1835,7 @@ class Project(_ProjectBuilders):
         self,
         name: str,
         *,
+        env: Env | None = None,
         version: str | None = None,
         components: Sequence[str] | None = None,
         required: bool,
@@ -1831,6 +1846,7 @@ class Project(_ProjectBuilders):
         self,
         name: str,
         *,
+        env: Env | None = None,
         version: str | None = None,
         components: Sequence[str] | None = None,
         required: bool = True,
@@ -1839,14 +1855,22 @@ class Project(_ProjectBuilders):
         """Find an external package and return it as an ImportedTarget.
 
         Searches for the package using the configured finder chain
-        (default: PkgConfigFinder → SystemFinder). Results are cached
-        so repeated calls with the same arguments return the same target.
+        (default: PkgConfigFinder → SystemFinder). Results are cached per
+        environment, so repeated calls with the same arguments return the
+        same target and two environments may hold two different answers for
+        one package name.
 
         The returned target can be used as a dependency via target.link()
         or applied directly to an environment via env.use().
 
         Args:
             name: Package name (e.g., "zlib", "openssl").
+            env: The environment the package is for. It selects the cache
+                slot and becomes the returned target's environment, so a
+                cross build and a host build each get their own. Without
+                one, the environment a target with none of its own inherits
+                is used, which in a single-environment project is that
+                environment.
             version: Optional version requirement (e.g., ">=3.0").
             components: Optional list of package components.
             required: If True (default), raises PackageNotFoundError when
@@ -1875,25 +1899,39 @@ class Project(_ProjectBuilders):
             app.link(zlib)
             env.use(openssl)
         """
-        cache_key = (name, version, tuple(components or []), system)
-        # One package is one target, and a target name is unique, so the two
-        # spellings of the same package cannot both exist. Say which two,
-        # rather than letting Target.__init__ report a name collision. A
-        # cached None is a package that was never found, so it owns no target
-        # and conflicts with nothing.
+        if env is None:
+            env = self._inherited_environment()
+        cache_key = _PackageKey(
+            name=name,
+            env=env.name if env is not None else None,
+            version=version,
+            components=tuple(components or []),
+            system=system,
+        )
+        # Within one environment a package is one target, so the two
+        # spellings of it cannot both exist. Say which two, rather than
+        # letting Target.__init__ report a name collision. A cached None is a
+        # package that was never found, so it owns no target and conflicts
+        # with nothing.
+        lookup = cache_key._replace(system=False)
         conflicting = next(
             (
                 k
                 for k, found in self._found_packages.items()
-                if k[:3] == cache_key[:3] and k[3] != system and found is not None
+                if k._replace(system=False) == lookup
+                and k.system != system
+                and found is not None
             ),
             None,
         )
         if conflicting is not None:
+            where = (
+                f" in environment '{env.name}'" if env is not None and env.name else ""
+            )
             raise ValueError(
-                f"Package '{name}' was already found with system={conflicting[3]}; "
-                f"requesting system={system} would need a second target of the "
-                f"same name. Pick one spelling for the whole project."
+                f"Package '{name}' was already found{where} with "
+                f"system={conflicting.system}; requesting system={system} would "
+                f"need a second target of the same name. Pick one spelling."
             )
         if cache_key not in self._found_packages:
             if self._package_finder_chain is None:
@@ -1916,7 +1954,7 @@ class Project(_ProjectBuilders):
                 from pcons.packages.imported import ImportedTarget
 
                 self._found_packages[cache_key] = ImportedTarget.from_package(
-                    pkg, components=components, system=system
+                    pkg, components=components, system=system, env=env
                 )
 
         target = self._found_packages[cache_key]
