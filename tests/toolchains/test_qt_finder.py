@@ -294,6 +294,94 @@ class TestQtPathsRoute:
 
 
 # =============================================================================
+# Header-only modules
+# =============================================================================
+
+
+class TestHeaderOnlyModules:
+    """QmlIntegration ships headers and no library, and Qml requires it."""
+
+    def _tree(self, project, tmp_path, modules, wanted, framework=False):
+        query = _make_qt_tree(tmp_path / "qt", framework=framework, modules=modules)
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        with _patch_pkgconfig(_FakePkgConfig({}, available=False)), p1, p2:
+            return find_qt(project, modules=wanted)
+
+    def test_qml_closure_carries_qmlintegration(self, project, tmp_path):
+        qt = self._tree(
+            project,
+            tmp_path,
+            ["Core", "Network", "Qml", "QmlIntegration"],
+            ["Qml"],
+        )
+        assert qt is not None
+        integration = qt.QmlIntegration
+        assert [
+            lib for lib in integration.public.link_libs if isinstance(lib, str)
+        ] == []
+        assert not integration.public.link_dirs
+        assert str(tmp_path / "qt" / "include" / "QtQmlIntegration") in [
+            str(d) for d in integration.public.include_dirs
+        ]
+        assert "QT_QMLINTEGRATION_LIB" in integration.public.defines
+        deps = [t for t in qt.Qml.public.link_libs if not isinstance(t, str)]
+        assert "Qt6QmlIntegration" in [t.name for t in deps]
+        assert "Qt6Qml" in qt.Qml.public.link_libs
+
+    def test_requested_directly(self, project, tmp_path):
+        qt = self._tree(
+            project, tmp_path, ["Core", "QmlIntegration"], ["QmlIntegration"]
+        )
+        assert qt is not None
+        assert [
+            lib for lib in qt.QmlIntegration.public.link_libs if isinstance(lib, str)
+        ] == []
+
+    def test_requested_directly_but_absent_raises(self, project, tmp_path):
+        with pytest.raises(QtNotFoundError):
+            self._tree(project, tmp_path, ["Core"], ["QmlIntegration"])
+
+    def test_framework_install_without_it_still_resolves_qml(self, project, tmp_path):
+        qt = self._tree(
+            project,
+            tmp_path,
+            ["Core", "Network", "Qml"],
+            ["Qml"],
+            framework=True,
+        )
+        assert qt is not None
+        assert "QmlIntegration" not in qt.modules
+
+    def test_added_by_a_later_call_without_it(self, project, tmp_path):
+        query = _make_qt_tree(
+            tmp_path / "qt", framework=True, modules=["Core", "Network", "Qml"]
+        )
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        with _patch_pkgconfig(_FakePkgConfig({}, available=False)), p1, p2:
+            find_qt(project, modules=["Core"])
+            qt = find_qt(project, modules=["Qml"])
+        assert qt is not None
+        assert "Qml" in qt.modules
+
+    def test_pkgconfig_route_unchanged(self, project):
+        pcs = dict(_LINUX_PCS)
+        pcs["Qt6Qml"] = PackageDescription(
+            name="Qt6Qml",
+            version="6.7.2",
+            include_dirs=["/usr/include/qt6", "/usr/include/qt6/QtQmlIntegration"],
+            library_dirs=["/usr/lib64"],
+            libraries=["Qt6Qml", "Qt6Network", "Qt6Core"],
+            defines=["QT_QML_LIB", "QT_QMLINTEGRATION_LIB"],
+            prefix="/usr",
+        )
+        fake = _FakePkgConfig(pcs, variables={"prefix": "/usr"})
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            qt = find_qt(project, modules=["Qml"])
+        assert qt is not None
+        assert sorted(qt.modules) == ["Core", "Qml"]
+
+
+# =============================================================================
 # Platform requirements
 # =============================================================================
 

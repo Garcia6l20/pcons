@@ -68,6 +68,10 @@ Probing order:
    distributions and Homebrew macOS; handles framework linking.
 2. **qtpaths/qmake introspection** (`qtpaths6 -query`) — for installs
    without pkg-config files, e.g. the official Qt installer and Windows.
+   This route resolves inter-module dependencies from a built-in table, so
+   asking for `Qml` also brings in `Network` and `QmlIntegration`. The
+   latter is header-only: it contributes an include directory, which every
+   `QML_ELEMENT` header needs, and links nothing.
 
 ### Choosing the probe
 
