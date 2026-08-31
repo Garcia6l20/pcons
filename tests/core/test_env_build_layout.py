@@ -368,6 +368,35 @@ class TestWindowsImportLibrary:
         assert _primary_path(shared) == "build/foo.dll"
         assert _import_lib_path(shared) == "build/lib/foo.lib"
 
+    def test_the_library_directory_takes_it_too(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        env.library_directory = "bin"
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/bin/foo.dll"
+        assert _import_lib_path(shared) == "build/bin/foo.lib"
+
+    def test_the_archive_directory_wins_over_the_library_one(
+        self, tmp_path, source, windows_toolchain, monkeypatch
+    ):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=windows_toolchain)
+        env.library_directory = "bin"
+        env.archive_directory = "lib"
+        shared = project.SharedLibrary("foo", env, sources=["src/common.c"])
+
+        monkeypatch.setattr("sys.platform", "win32")
+        project.resolve()
+
+        assert _primary_path(shared) == "build/bin/foo.dll"
+        assert _import_lib_path(shared) == "build/lib/foo.lib"
+
     def test_a_subdirectory_in_output_prefix_is_kept(
         self, tmp_path, source, windows_toolchain, monkeypatch
     ):

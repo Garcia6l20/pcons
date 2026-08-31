@@ -730,11 +730,16 @@ class CompileLinkFactory:
         import sys
 
         if sys.platform == "win32":
-            # The import library is an archive, and CMake places it with the
-            # other archives rather than beside the DLL.
+            # An import library is an archive, so archive_directory places it,
+            # the way CMake does. Unset, it follows its DLL rather than falling
+            # back to the build-dir root.
             import_name = str(PurePosixPath(lib_name).with_suffix(".lib"))
+            archive_directory = env.output_directory_for("static_library")
             import_lib_path = self._output_path(
-                target, env, import_name, "static_library"
+                target,
+                env,
+                import_name,
+                "static_library" if archive_directory is not None else "shared_library",
             )
             lib_node._build_info["outputs"] = {
                 "primary": {"path": lib_path, "suffix": lib_path.suffix},
