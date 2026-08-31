@@ -228,6 +228,25 @@ Worth knowing before porting a large CMake project:
   ones. Headers from a *prebuilt* Qt-based SDK reached that way would
   get spurious moc edges; exclude them with `no_moc=[...]`. (Libraries
   found via `find_package`/`find_qt` are excluded automatically.)
+- **pcons cannot see what the target Qt was built with.** moc, uic and
+  rcc run on the build machine, from the host Qt, and their output is
+  compiled against the Qt you link. When the two were configured
+  differently the generated code can reference something the target does
+  not have: rcc compresses with zstd by default, and a target Qt built
+  without zstd then fails to link on `qResourceFeatureZstd`. Neither
+  `qtpaths6 --query` nor pkg-config reports a Qt install's feature set
+  (only paths, mkspec and version), so pcons cannot detect this. Spell
+  the flag out on the environment that needs it, which is per
+  environment like everything else:
+
+  ```python
+  cross.qt.rccflags.append("--no-zstd")
+  ```
+
+  The target Qt's feature list is in
+  `<prefix>/mkspecs/qconfig.pri` (`QT.global.enabled_features`) and in
+  `<prefix>/include/QtCore/qconfig.h` (`QT_FEATURE_zstd`) if you need to
+  check which way it was built.
 - **Not yet implemented:** qmlcachegen AOT compilation, QML plugin
   libraries / singletons / subdirectory QML files, static-Qt plugin
   imports (`Q_IMPORT_PLUGIN`), per-file resource compression options and

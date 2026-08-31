@@ -11,7 +11,12 @@ import pytest
 
 from pcons.core.project import Project
 
-from ._qt_test_utils import cxx_env_with_qt, generate_ninja, qt_only_env
+from ._qt_test_utils import (
+    cxx_env_with_qt,
+    fake_qt_toolchain,
+    generate_ninja,
+    qt_only_env,
+)
 
 
 def _make_project(tmp_path, monkeypatch):
@@ -319,6 +324,39 @@ class TestAlongsideCxxToolchain:
         )
         # ...and moc itself runs as a visible edge.
         assert "build qt.gen/src/moc_thing.cpp:" in content
+
+
+class TestRccFlags:
+    """env.qt.rccflags is how a caller corrects rcc, per environment.
+
+    rcc runs from the host Qt and its output is compiled against the Qt
+    being linked. Nothing pcons can query reports a Qt install's feature
+    set, so a target Qt lacking one the host rcc uses by default needs the
+    flag spelled out - and a host build in the same project must not get it.
+    """
+
+    def test_flags_reach_the_command_line(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        env = qt_only_env(project)
+        env.qt.rccflags.append("--no-zstd")
+        env.qt.Rcc(sources="res.qrc")
+        content = generate_ninja(project)
+        assert "/fake/bin/rcc --no-zstd --name $RCCNAME" in content
+
+    def test_one_answer_per_environment(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        (tmp_path / "cross.qrc").write_text("<RCC/>\n")
+        host = project.Environment(toolchain=fake_qt_toolchain(), name="host")
+        cross = project.Environment(toolchain=fake_qt_toolchain(), name="cross")
+        cross.qt.rccflags.append("--no-zstd")
+        host.qt.Rcc(sources="res.qrc")
+        cross.qt.Rcc(sources="cross.qrc")
+
+        content = generate_ninja(project)
+
+        commands = [line for line in content.splitlines() if "/fake/bin/rcc" in line]
+        assert len(commands) == 2
+        assert len([c for c in commands if "--no-zstd" in c]) == 1
 
 
 class TestResourceRulesAreShared:
