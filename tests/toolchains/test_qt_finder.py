@@ -201,8 +201,14 @@ class TestPkgConfigRoute:
 # =============================================================================
 
 
-def _make_qt_tree(root: Path, *, framework: bool, modules: list[str]) -> dict[str, str]:
-    """Create a fake Qt install tree; return the -query dict for it."""
+def _make_qt_tree(
+    root: Path, *, framework: bool, modules: list[str], abi: str | None = None
+) -> dict[str, str]:
+    """Create a fake Qt install tree; return the -query dict for it.
+
+    @p abi mimics a Qt for Android: every library file is named after the
+    ABI and the query reports the android-clang spec.
+    """
     libs = root / "lib"
     headers = root / "include"
     libexec = root / "libexec"
@@ -214,6 +220,8 @@ def _make_qt_tree(root: Path, *, framework: bool, modules: list[str]) -> dict[st
             (libs / f"Qt{mod}.framework" / "Headers").mkdir(parents=True)
         else:
             (headers / f"Qt{mod}").mkdir(parents=True)
+        if abi is not None and not framework:
+            (libs / f"libQt6{mod}{abi}.so").write_text("")
     from pcons.configure.platform import get_platform
 
     exe_suffix = ".exe" if get_platform().is_windows else ""
@@ -221,7 +229,7 @@ def _make_qt_tree(root: Path, *, framework: bool, modules: list[str]) -> dict[st
         tool_file = libexec / f"{tool}{exe_suffix}"
         tool_file.write_text("#!/bin/sh\n")
         tool_file.chmod(0o755)
-    return {
+    query = {
         "QT_VERSION": "6.6.1",
         "QT_INSTALL_PREFIX": str(root),
         "QT_INSTALL_LIBS": str(libs),
@@ -229,6 +237,9 @@ def _make_qt_tree(root: Path, *, framework: bool, modules: list[str]) -> dict[st
         "QT_HOST_BINS": str(bins),
         "QT_HOST_LIBEXECS": str(libexec),
     }
+    if abi is not None:
+        query["QMAKE_XSPEC"] = "android-clang"
+    return query
 
 
 def _patch_qtpaths(query: dict[str, str], tmp_path: Path):
@@ -291,6 +302,88 @@ class TestQtPathsRoute:
         with _patch_pkgconfig(_FakePkgConfig({}, available=False)), p1, p2:
             with pytest.raises(QtNotFoundError):
                 find_qt(project, modules=["Widgets"])
+
+
+class TestAndroidAbiSuffix:
+    """Qt for Android names every library after the ABI it was built for.
+
+    Measured on Qt 6.11.1: an ``android_arm64_v8a`` install holds only
+    ``libQt6Core_arm64-v8a.so``, with no unsuffixed file for any module,
+    so the host spelling cannot link. The suffix is read back from the
+    file names rather than derived from the environment's architecture:
+    a mismatched Qt then names a library that exists and fails at link
+    with a real architecture error, instead of looking like a broken
+    install.
+    """
+
+    def _find(self, project, tmp_path, query, modules=("Core",)):
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        with _patch_pkgconfig(_FakePkgConfig({}, available=False)), p1, p2:
+            return find_qt(project, modules=list(modules))
+
+    @pytest.mark.parametrize("abi", ["_arm64-v8a", "_x86_64", "_armeabi-v7a"])
+    def test_module_libraries_carry_the_abi(self, project, tmp_path, abi):
+        query = _make_qt_tree(
+            tmp_path / "qt", framework=False, modules=["Core", "Gui"], abi=abi
+        )
+        qt = self._find(project, tmp_path, query, modules=["Gui"])
+        assert qt is not None
+        assert f"Qt6Gui{abi}" in qt.Gui.public.link_libs
+        assert f"Qt6Core{abi}" in qt.Core.public.link_libs
+
+    def test_the_suffix_reaches_the_link_line(self, project, tmp_path):
+        query = _make_qt_tree(
+            tmp_path / "qt", framework=False, modules=["Core"], abi="_arm64-v8a"
+        )
+        qt = self._find(project, tmp_path, query)
+        assert qt is not None
+        assert "-lQt6Core_arm64-v8a" in qt.Core.link_flags
+
+    def test_the_target_keeps_its_unsuffixed_identity(self, project, tmp_path):
+        query = _make_qt_tree(
+            tmp_path / "qt", framework=False, modules=["Core"], abi="_arm64-v8a"
+        )
+        qt = self._find(project, tmp_path, query)
+        assert qt is not None
+        assert qt.Core.name == "Qt6Core"
+
+    def test_a_non_android_install_is_never_probed(self, project, tmp_path):
+        """The gate is QMAKE_XSPEC, not the presence of suffixed files.
+
+        A Linux install pays no directory scan, so the tree here carries
+        ABI-named libraries that must be ignored outright.
+        """
+        query = _make_qt_tree(
+            tmp_path / "qt", framework=False, modules=["Core"], abi="_arm64-v8a"
+        )
+        query["QMAKE_XSPEC"] = "linux-g++"
+        qt = self._find(project, tmp_path, query)
+        assert qt is not None
+        assert qt.Core.public.link_libs == ["Qt6Core"]
+
+    def test_a_module_with_no_suffixed_library_is_missing(self, project, tmp_path):
+        query = _make_qt_tree(
+            tmp_path / "qt",
+            framework=False,
+            modules=["Core", "Gui", "Widgets"],
+            abi="_arm64-v8a",
+        )
+        (tmp_path / "qt" / "lib" / "libQt6Widgets_arm64-v8a.so").unlink()
+        with pytest.raises(QtNotFoundError):
+            self._find(project, tmp_path, query, modules=["Widgets"])
+
+    def test_a_header_only_module_needs_no_library(self, project, tmp_path):
+        query = _make_qt_tree(
+            tmp_path / "qt",
+            framework=False,
+            modules=["Core", "Network", "Qml", "QmlIntegration"],
+            abi="_arm64-v8a",
+        )
+        (tmp_path / "qt" / "lib" / "libQt6QmlIntegration_arm64-v8a.so").unlink()
+        qt = self._find(project, tmp_path, query, modules=["Qml"])
+        assert qt is not None
+        libs = qt.QmlIntegration.public.link_libs
+        assert [lib for lib in libs if isinstance(lib, str)] == []
 
 
 # =============================================================================

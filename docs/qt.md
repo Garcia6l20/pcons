@@ -266,6 +266,12 @@ Worth knowing before porting a large CMake project:
   libraries; moc runs with `--compiler-flavor msvc`.
 - **Linux**: distro Qt (apt/dnf/pacman) is found via pkg-config; the
   official installer via `qtpaths` or `qt_root=`/`$PCONS_QT_ROOT`.
+- **Android**: Qt names every library after the ABI, so an
+  `android_arm64_v8a` install holds `libQt6Core_arm64-v8a.so` and no
+  unsuffixed file. `find_qt` reads the suffix off the install and links
+  `-lQt6Core_arm64-v8a`. The module target keeps its plain name,
+  `qt.Core`. Qt reports no ABI of its own, so this needs the `qtpaths`
+  probe and a real install to read.
 
 ## QML modules
 
