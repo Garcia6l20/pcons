@@ -914,6 +914,18 @@ class Project(_ProjectBuilders):
             f"or any enclosing project."
         )
 
+    def _inherited_environment(self) -> Env | None:
+        """The environment of a target created without one.
+
+        An ``add_subdirectory(..., env=...)`` in progress wins: the whole
+        included tree builds for that environment, targets a builder makes
+        without taking an ``env`` argument included. Without one, the project's
+        own last environment, which is all a single-environment project has.
+        """
+        if Project.__default_env is not None:
+            return Project.__default_env
+        return self._environments[-1] if self._environments else None
+
     def Alias(
         self, name: str, *targets: Target | Node | list[Target | Node]
     ) -> AliasNode:

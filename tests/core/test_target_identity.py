@@ -261,3 +261,43 @@ class TestAmbiguityMessage:
         assert "child::common, child::common" in message
         assert "no spelling tells them apart" in message
 
+
+class TestTargetsWithoutAnEnvironment:
+    """A builder taking no ``env`` still lands in the right environment."""
+
+    def _include(self, project, tmp_path, env):
+        (tmp_path / "sub").mkdir(exist_ok=True)
+        with project._enter_subdir("sub", env=env):
+            child = Project("child", root_dir=tmp_path / "sub")
+            return child.HeaderOnlyLibrary("common")
+
+    def test_it_takes_the_included_environment(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        mcu, _host = _two_envs(project, gcc_toolchain)
+
+        iface = self._include(project, tmp_path, mcu)
+
+        assert iface.env is mcu
+        assert iface.qualified_name == "child::common@mcu"
+
+    def test_it_falls_back_to_its_own_projects_last_environment(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        _mcu, host = _two_envs(project, gcc_toolchain)
+
+        iface = project.HeaderOnlyLibrary("common")
+
+        assert iface.env is host
+
+    def test_one_child_included_twice_makes_two_targets(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        envs = _two_envs(project, gcc_toolchain)
+
+        made = [self._include(project, tmp_path, env) for env in envs]
+
+        assert [t.qualified_name for t in made] == [
+            "child::common@mcu",
+            "child::common@host",
+        ]
+        assert project.get_target("common@host") is made[1]

@@ -559,8 +559,7 @@ class Target:
         self._subdir = project._node_offset
 
         if self._env is None:
-            # default to the last environment in the project, if available
-            self._env = project.environments[-1] if project.environments else None
+            self._env = project._inherited_environment()
 
         self.__project._add_target(self)
 
