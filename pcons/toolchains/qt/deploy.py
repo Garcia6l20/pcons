@@ -84,9 +84,9 @@ class QtDeployBuilder:
         build_dir = Path(env.get("build_dir", "build"))
         stamp = build_dir / f"qt.{name}" / "deploy.stamp"
 
-        from pcons.toolchains.qt.finder import _qt_installs
+        from pcons.toolchains.qt.finder import qt_install
 
-        qt = _qt_installs.get(project)
+        qt = qt_install(project, env)
 
         def qt_tool(tool_name: str) -> str:
             if qt is not None:

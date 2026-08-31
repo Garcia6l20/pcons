@@ -69,8 +69,18 @@ Probing order:
    without pkg-config files, e.g. the official Qt installer and Windows.
 
 Passing `env` adds the `qt` toolchain to the environment (tool paths for
-moc/uic/rcc), enabling the builders below. Discovery is cached per
-project; call `find_qt` again to add modules.
+moc/uic/rcc), enabling the builders below. Discovery is cached per project
+and per environment name; call `find_qt` again with the same environment to
+add modules, and once per environment to build for two of them:
+
+```python
+host_qt = find_qt(project, host, modules=["Widgets"])
+mcu_qt = find_qt(project, mcu, modules=["Core"])
+```
+
+Each environment gets its own install and its own module targets, told
+apart by `Qt6Core@host` and `Qt6Core@mcu`. Two environments without names
+share one install, because nothing tells them apart.
 
 ## The automoc scan
 

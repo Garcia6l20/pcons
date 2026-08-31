@@ -190,9 +190,9 @@ def _scan_include_dirs(
     finds) are excluded — their headers are prebuilt and must never
     grow moc edges here.
     """
-    from pcons.toolchains.qt.finder import _qt_installs
+    from pcons.toolchains.qt.finder import qt_install
 
-    qt = _qt_installs.get(project)
+    qt = qt_install(project, env)
     dirs = [
         d
         for d in _env_include_dirs(project, env)

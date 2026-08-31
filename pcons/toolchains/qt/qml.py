@@ -92,7 +92,9 @@ def _linked_qt_modules(link: Sequence[Target]) -> set[str]:
     return names
 
 
-def _qt_metatypes(project: Project, link: Sequence[Target]) -> list[Path]:
+def _qt_metatypes(
+    project: Project, env: Environment, link: Sequence[Target]
+) -> list[Path]:
     """Qt's own metatypes files for the linked modules.
 
     Restricted to the link closure (plus core/qml, always needed as
@@ -100,9 +102,9 @@ def _qt_metatypes(project: Project, link: Sequence[Target]) -> list[Path]:
     makes qmltyperegistrar trip over unrelated modules that define
     same-named types (e.g. Charts vs Graphs QAbstractAxis).
     """
-    from pcons.toolchains.qt.finder import _qt_installs
+    from pcons.toolchains.qt.finder import qt_install
 
-    qt = _qt_installs.get(project)
+    qt = qt_install(project, env)
     if qt is None:
         return []
     wanted = _linked_qt_modules(link) | {"core", "qml"}
@@ -229,7 +231,7 @@ class QtQmlModuleBuilder:
             )[0]
             _set_node_vars(metatypes, {"JSONFILES": json_tokens})
 
-            foreign = _qt_metatypes(project, link)
+            foreign = _qt_metatypes(project, env, link)
             registrar_node = qt_env.qt.TypeRegistrar(
                 qt_dir / f"{name}_qmltyperegistrations.cpp", [metatypes]
             )[0]
