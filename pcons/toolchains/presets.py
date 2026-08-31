@@ -7,7 +7,7 @@ for building on a different platform. Use with env.apply_cross_preset().
 Example:
     from pcons.toolchains.presets import android, ios, emscripten, wasi_sdk, linux_cross
 
-    env.apply_cross_preset(android(ndk="~/android-ndk", arch="arm64-v8a"))
+    env.apply_cross_preset(android(ndk="~/android-ndk", arch="arm64-v8a", api=35))
     env.apply_cross_preset(ios(arch="arm64"))
     env.apply_cross_preset(emscripten(emsdk="~/emsdk"))
     env.apply_cross_preset(linux_cross(triple="aarch64-linux-gnu"))
@@ -214,8 +214,8 @@ AndroidStl = Literal["c++_shared", "c++_static", "none"]
 def android(
     ndk: str,
     arch: str = "arm64-v8a",
-    api: int = 21,
     *,
+    api: int,
     stl: AndroidStl = "c++_shared",
 ) -> CrossPreset:
     """Create a cross-compilation preset for Android NDK.
@@ -233,7 +233,10 @@ def android(
         ndk: Path to the Android NDK root directory.
         arch: Android architecture name. Supported values:
               "arm64-v8a", "armeabi-v7a", "x86_64", "x86".
-        api: Minimum Android API level (default: 21).
+        api: Minimum Android API level. Required, and deliberately without
+             a default: it is the oldest Android release the app runs on,
+             a product decision that decides which NDK headers and which
+             symbols the build sees.
         stl: C++ runtime to link. "c++_shared" is the NDK default and one
              runtime shared by every library. "c++_static" links a private
              copy into each artifact. "none" links no C++ runtime, leaving

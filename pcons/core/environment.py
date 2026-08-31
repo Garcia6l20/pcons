@@ -1202,7 +1202,7 @@ class Environment(_EnvironmentStubs):
         Example:
             from pcons.toolchains.presets import android, ios
 
-            env.apply_cross_preset(android(ndk="~/android-ndk"))
+            env.apply_cross_preset(android(ndk="~/android-ndk", api=35))
             env.apply_cross_preset(ios(arch="arm64"))
         """
         if self.toolchains:

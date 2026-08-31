@@ -79,13 +79,13 @@ class TestAndroidPreset:
     """Tests for the android() factory function."""
 
     def test_default_arch(self) -> None:
-        preset = android(ndk="/fake/ndk")
+        preset = android(ndk="/fake/ndk", api=21)
         assert preset.name == "android-arm64-v8a"
         assert preset.arch == "arm64-v8a"
         assert "aarch64-linux-android21" in (preset.triple or "")
 
     def test_custom_arch(self) -> None:
-        preset = android(ndk="/fake/ndk", arch="x86_64")
+        preset = android(ndk="/fake/ndk", arch="x86_64", api=21)
         assert preset.name == "android-x86_64"
         assert "x86_64-linux-android21" in (preset.triple or "")
 
@@ -93,12 +93,26 @@ class TestAndroidPreset:
         preset = android(ndk="/fake/ndk", api=30)
         assert "android30" in (preset.triple or "")
 
+    def test_the_api_level_has_no_default(self) -> None:
+        """A minimum Android release is a product decision, not a guess.
+
+        Whatever number a build system picked would be wrong within a
+        year, and it silently decides which NDK headers and which symbols
+        the build sees.
+        """
+        with pytest.raises(TypeError, match="api"):
+            android(ndk="/fake/ndk")  # type: ignore[call-arg]
+
+    def test_the_api_level_is_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            android("/fake/ndk", "arm64-v8a", 35)  # type: ignore[misc]
+
     def test_unknown_arch_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown Android architecture"):
-            android(ndk="/fake/ndk", arch="mips")
+            android(ndk="/fake/ndk", arch="mips", api=21)
 
     def test_tool_cmds_set(self) -> None:
-        preset = android(ndk="/fake/ndk")
+        preset = android(ndk="/fake/ndk", api=21)
         cmds = preset.resolved_tool_cmds()
         assert "clang" in cmds["cc"]
         assert "clang++" in cmds["cxx"]
@@ -106,7 +120,7 @@ class TestAndroidPreset:
         assert "llvm-ar" in cmds["ar"]
 
     def test_sysroot_set(self) -> None:
-        preset = android(ndk="/fake/ndk")
+        preset = android(ndk="/fake/ndk", api=21)
         assert preset.sysroot is not None
         assert "sysroot" in preset.sysroot
 
@@ -120,34 +134,34 @@ class TestAndroidStl:
     """
 
     def test_the_default_adds_no_flag(self) -> None:
-        preset = android(ndk="/fake/ndk")
+        preset = android(ndk="/fake/ndk", api=21)
         assert preset.extra_link_flags == ()
 
     def test_shared_adds_no_flag(self) -> None:
-        preset = android(ndk="/fake/ndk", stl="c++_shared")
+        preset = android(ndk="/fake/ndk", api=21, stl="c++_shared")
         assert preset.extra_link_flags == ()
 
     def test_static_links_a_private_copy(self) -> None:
-        preset = android(ndk="/fake/ndk", stl="c++_static")
+        preset = android(ndk="/fake/ndk", api=21, stl="c++_static")
         assert preset.extra_link_flags == ("-static-libstdc++",)
 
     def test_none_links_no_runtime(self) -> None:
-        preset = android(ndk="/fake/ndk", stl="none")
+        preset = android(ndk="/fake/ndk", api=21, stl="none")
         assert preset.extra_link_flags == ("-nostdlib++",)
 
     @pytest.mark.parametrize("stl", ["c++_shared", "c++_static", "none"])
     def test_no_choice_names_the_standard_library(self, stl: str) -> None:
         """-stdlib=libc++ is what the NDK already does; naming it is noise."""
-        preset = android(ndk="/fake/ndk", stl=stl)  # type: ignore[arg-type]
+        preset = android(ndk="/fake/ndk", api=21, stl=stl)  # type: ignore[arg-type]
         assert "-stdlib=libc++" not in preset.extra_link_flags
 
     def test_unknown_stl_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown Android STL"):
-            android(ndk="/fake/ndk", stl="libstdc++")  # type: ignore[arg-type]
+            android(ndk="/fake/ndk", api=21, stl="libstdc++")  # type: ignore[arg-type]
 
     def test_the_stl_is_keyword_only(self) -> None:
         with pytest.raises(TypeError):
-            android("/fake/ndk", "arm64-v8a", 21, "c++_static")  # type: ignore[misc]
+            android("/fake/ndk", "arm64-v8a", "c++_static")  # type: ignore[misc]
 
 
 class TestIosPreset:
@@ -791,7 +805,7 @@ class TestPresetsNameAPlatform:
         assert CrossPreset(name="p", arch="arm64").target_platform is None
 
     def test_the_android_factory_targets_android(self) -> None:
-        plat = android(ndk="/nowhere", arch="arm64-v8a").target_platform
+        plat = android(ndk="/nowhere", arch="arm64-v8a", api=21).target_platform
         assert plat is not None
         assert plat.os == "android"
         assert plat.shared_lib_prefix == "lib"
@@ -829,7 +843,7 @@ class TestEnvironmentKnowsItsTarget:
 
         env = _make_unix_env_with_ar()
         env._toolchain = LlvmToolchain()
-        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a", api=21))
 
         assert env.target.os == "android"
         assert env.target.shared_lib_prefix == "lib"
@@ -884,7 +898,7 @@ class TestEnvironmentKnowsItsTarget:
 
         env = _make_unix_env_with_ar()
         env._toolchain = LlvmToolchain()
-        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a", api=21))
 
         clone = env.clone()
         assert clone.target.os == "android"
@@ -900,7 +914,7 @@ class TestEnvironmentKnowsItsTarget:
 
         env = _make_unix_env_with_ar()
         env._toolchain = LlvmToolchain()
-        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a", api=21))
 
         with pytest.raises(ValueError, match="dedicated toolchain"):
             env.apply_cross_preset(emscripten())
@@ -911,7 +925,7 @@ class TestEnvironmentKnowsItsTarget:
         from pcons.configure.platform import get_platform
 
         env = Environment()
-        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a", api=21))
 
         assert env.target == get_platform()
 
