@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from pcons.core.environment import Environment as Env
 from pcons.core.errors import PackageNotFoundError
 from pcons.core.project import Project
 from pcons.packages.description import PackageDescription
@@ -109,7 +110,7 @@ class TestFindPackage:
         # system finders can accidentally succeed
         from pcons.packages.finders.base import FinderChain
 
-        project._package_finder_chain = FinderChain([MockFinder()])
+        project._package_finder_chains[None] = FinderChain([MockFinder()])
 
         with pytest.raises(PackageNotFoundError, match="nonexistent-pkg-12345"):
             project.find_package("nonexistent-pkg-12345")
@@ -119,7 +120,7 @@ class TestFindPackage:
         project = Project("test")
         from pcons.packages.finders.base import FinderChain
 
-        project._package_finder_chain = FinderChain([MockFinder()])
+        project._package_finder_chains[None] = FinderChain([MockFinder()])
 
         result = project.find_package("nonexistent-pkg-12345", required=False)
 
@@ -425,3 +426,139 @@ class TestFindPackagePerEnvironment:
 
         with pytest.raises(ValueError, match="in environment 'mcu'"):
             project.find_package("doctest", env=mcu, system=True)
+
+
+def _cross_env(project: Project, name: str, sysroot: Path | None) -> Env:
+    """A named environment retargeted with a cross preset."""
+    from pcons.toolchains.llvm import LlvmToolchain
+    from pcons.toolchains.presets import CrossPreset
+
+    env = project.Environment(name=name)
+    for tool in ("cc", "cxx", "link"):
+        config = env.add_tool(tool)
+        config.set("cmd", "clang")
+        config.set("flags", [])
+        config.set("defines", [])
+    env._toolchain = LlvmToolchain()
+    env.apply_cross_preset(
+        CrossPreset(
+            name="target",
+            arch="arm64",
+            triple="aarch64-linux-gnu",
+            sysroot=str(sysroot) if sysroot is not None else None,
+        )
+    )
+    return env
+
+
+class TestFinderChainPerEnvironment:
+    """Each environment searches its own chain, built from what it targets."""
+
+    def test_a_host_environment_searches_the_machine(self) -> None:
+        from pcons.packages.finders import SystemFinder
+
+        project = Project("test")
+        host = project.Environment(name="host")
+
+        chain = project._finder_chain_for(host)
+        system = next(f for f in chain._finders if isinstance(f, SystemFinder))
+
+        assert system.include_paths == SystemFinder().include_paths
+
+    def test_a_cross_environment_searches_its_sysroot(self, tmp_path: Path) -> None:
+        from pcons.packages.finders import SystemFinder
+
+        project = Project("test")
+        mcu = _cross_env(project, "mcu", tmp_path)
+
+        chain = project._finder_chain_for(mcu)
+        system = next(f for f in chain._finders if isinstance(f, SystemFinder))
+
+        assert system.include_paths == [tmp_path / "usr/include", tmp_path / "include"]
+        assert system.library_paths == [tmp_path / "usr/lib", tmp_path / "lib"]
+
+    def test_a_cross_environment_without_a_sysroot_finds_nothing(self) -> None:
+        project = Project("test")
+        mcu = _cross_env(project, "mcu", None)
+
+        assert project._finder_chain_for(mcu)._finders == []
+        with pytest.raises(PackageNotFoundError):
+            project.find_package("zlib", env=mcu)
+
+    def test_two_environments_get_two_answers(self) -> None:
+        """The end-to-end claim: one name, two environments, two results."""
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        project.add_package_finder(
+            MockFinder({"zlib": _make_pkg("zlib", include_dirs=["/mcu/include"])}),
+            env=mcu,
+        )
+        project.add_package_finder(
+            MockFinder({"zlib": _make_pkg("zlib", include_dirs=["/host/include"])}),
+            env=host,
+        )
+
+        for_mcu = project.find_package("zlib", env=mcu)
+        for_host = project.find_package("zlib", env=host)
+
+        assert for_mcu is not None
+        assert for_host is not None
+        assert list(for_mcu.public.include_dirs) == [Path("/mcu/include")]
+        assert list(for_host.public.include_dirs) == [Path("/host/include")]
+
+    def test_a_project_wide_finder_serves_every_environment(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        project.add_package_finder(MockFinder({"zlib": _make_pkg("zlib")}))
+
+        assert project.find_package("zlib", env=mcu) is not None
+        assert project.find_package("zlib", env=host) is not None
+
+    def test_a_scoped_finder_serves_only_its_environment(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        host = project.Environment(name="host")
+        scoped = MockFinder({"only-mcu": _make_pkg("only-mcu")})
+        project.add_package_finder(scoped, env=mcu)
+
+        assert scoped in project._finder_chain_for(mcu)._finders
+        assert scoped not in project._finder_chain_for(host)._finders
+
+    def test_a_scoped_finder_is_tried_before_a_project_wide_one(self) -> None:
+        project = Project("test")
+        mcu = project.Environment(name="mcu")
+        everywhere = MockFinder({"zlib": _make_pkg("zlib", version="wide")})
+        scoped = MockFinder({"zlib": _make_pkg("zlib", version="scoped")})
+        project.add_package_finder(everywhere)
+        project.add_package_finder(scoped, env=mcu)
+
+        target = project.find_package("zlib", env=mcu)
+
+        assert target is not None
+        assert target.version == "scoped"
+
+    def test_a_finder_added_after_a_lookup_still_applies(self) -> None:
+        project = Project("test")
+        host = project.Environment(name="host")
+        project.add_package_finder(MockFinder({"zlib": _make_pkg("zlib")}))
+        project.find_package("zlib", env=host)
+
+        late = MockFinder({"fmt": _make_pkg("fmt")})
+        project.add_package_finder(late)
+
+        assert project.find_package("fmt", env=host) is not None
+
+    def test_an_unavailable_finder_is_reported_once(self, caplog) -> None:
+        project = Project("test")
+        host = project.Environment(name="host")
+        project.add_package_finder(MockFinder({"zlib": _make_pkg("zlib")}))
+
+        with caplog.at_level("WARNING"):
+            project.add_package_finder(AlwaysUnavailableFinder())
+            project.find_package("zlib", env=host)
+
+        warnings = [r for r in caplog.records if "not available" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "AlwaysUnavailableFinder" in warnings[0].getMessage()

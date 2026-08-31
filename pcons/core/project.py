@@ -260,7 +260,8 @@ class Project(_ProjectBuilders):
         "_resolved",
         "_path_resolver",
         "_found_packages",
-        "_package_finder_chain",
+        "_package_finder_chains",
+        "_extra_finders",
         "_configure_deps",
         "_pending_stages",
         "_scan_scopes",
@@ -348,7 +349,9 @@ class Project(_ProjectBuilders):
         self._resolved = False
         # None caches a negative find_package result for the key.
         self._found_packages: dict[_PackageKey, Target | None] = {}
-        self._package_finder_chain: Any = None  # Lazy-initialized FinderChain
+        # One lazily built FinderChain per environment name.
+        self._package_finder_chains: dict[str | None, Any] = {}
+        self._extra_finders: list[tuple[str | None, Any]] = []
         # Files the build description read while running: the generated build
         # files depend on these, so editing one re-runs pcons (see
         # add_configure_dependency / generated_input).
@@ -1934,18 +1937,8 @@ class Project(_ProjectBuilders):
                 f"need a second target of the same name. Pick one spelling."
             )
         if cache_key not in self._found_packages:
-            if self._package_finder_chain is None:
-                from pcons.packages.finders import (
-                    FinderChain,
-                    PkgConfigFinder,
-                    SystemFinder,
-                )
-
-                self._package_finder_chain = FinderChain(
-                    [PkgConfigFinder(), SystemFinder()]
-                )
-
-            pkg = self._package_finder_chain.find(name, version, components)
+            chain = self._finder_chain_for(env)
+            pkg = chain.find(name, version, components)
             if pkg is None:
                 # Cache the negative result too: don't re-run the finder
                 # chain (and its subprocesses) for every repeat probe.
@@ -1964,14 +1957,52 @@ class Project(_ProjectBuilders):
             raise PackageNotFoundError(name, version)
         return target
 
-    def add_package_finder(self, finder: Any) -> None:
+    def _finder_chain_for(self, env: Env | None) -> Any:
+        """The chain an environment searches, built once and kept.
+
+        A cross environment searches its own target and not the machine
+        running the build, so each environment gets a chain of its own rather
+        than sharing one per project.
+        """
+        from pcons.packages.finders import FinderChain, host_finders, sysroot_finders
+
+        key = env.name if env is not None else None
+        chain = self._package_finder_chains.get(key)
+        if chain is None:
+            cross = env.cross if env is not None else None
+            if cross is None:
+                defaults = host_finders()
+            elif cross.sysroot:
+                defaults = sysroot_finders(Path(cross.sysroot).expanduser())
+            else:
+                defaults = []
+            added = list(reversed(self._extra_finders))
+            scoped = [f for scope, f in added if scope is not None and scope == key]
+            shared = [f for scope, f in added if scope is None]
+            chain = FinderChain([*scoped, *shared, *defaults])
+            self._package_finder_chains[key] = chain
+        return chain
+
+    def add_package_finder(self, finder: Any, *, env: Env | None = None) -> None:
         """Add a package finder to the front of the search chain.
 
         Custom finders are tried before the default finders (PkgConfig,
-        System). Use this to add Conan, vcpkg, or custom finders.
+        System), most recently added first. Use this to add Conan, vcpkg, or
+        custom finders.
+
+        A finder added after a package was already looked up still applies to
+        every later lookup: whether it is consulted must not depend on where
+        in the script it was added, since nothing would report that it never
+        was.
 
         Args:
             finder: A BaseFinder instance.
+            env: Search with this finder in that environment only. Without
+                one, the finder is used in every environment, which is what
+                a single-environment project wants. An environment scopes by
+                its name, so an unnamed one scopes to nothing and the finder
+                is used everywhere. A finder scoped to an environment is
+                tried before the project-wide ones.
 
         Example:
             from pcons.packages.finders import ConanFinder
@@ -1979,18 +2010,14 @@ class Project(_ProjectBuilders):
             project.add_package_finder(ConanFinder(config, conanfile="conanfile.txt"))
             zlib = project.find_package("zlib")  # Tries Conan first
         """
-        if self._package_finder_chain is None:
-            from pcons.packages.finders import (
-                FinderChain,
-                PkgConfigFinder,
-                SystemFinder,
+        if not finder.is_available():
+            logger.warning(
+                "Package finder %s is not available (its tool was not found);"
+                " skipping it",
+                type(finder).__name__,
             )
-
-            self._package_finder_chain = FinderChain(
-                [finder, PkgConfigFinder(), SystemFinder()]
-            )
-        else:
-            self._package_finder_chain.add(finder)
+        self._extra_finders.append((env.name if env is not None else None, finder))
+        self._package_finder_chains.clear()
 
     # Command is kept as a wrapper since it delegates to env.Command()
     # and doesn't fit the registry pattern well

@@ -1766,7 +1766,7 @@ httplib.link(openssl)  # re-exported to consumers
 ### Package Finders
 > **Status: Implemented** - PkgConfigFinder, SystemFinder, and ConanFinder implemented. FinderChain provides ordered search.
 
-Finders locate packages and return `PackageDescription` objects. The easiest way to use them is through `project.find_package()`, which manages a FinderChain internally:
+Finders locate packages and return `PackageDescription` objects. The easiest way to use them is through `project.find_package()`, which manages one FinderChain per environment internally: a host environment searches the machine, an environment given a cross preset searches that target's sysroot.
 
 ```python
 # High-level API (preferred) — uses PkgConfig → System by default
@@ -1778,6 +1778,10 @@ from pcons.packages.finders import ConanFinder
 
 project.add_package_finder(ConanFinder(config, conanfile="conanfile.txt"))
 fmt = project.find_package("fmt")  # tries Conan → PkgConfig → System
+
+# Scope a finder and a search to one environment
+project.add_package_finder(ConanFinder(config, profile="mcu"), env=mcu)
+fmt_mcu = project.find_package("fmt", env=mcu)
 
 # Low-level API — use finders directly
 from pcons.packages.finders import PkgConfigFinder, SystemFinder

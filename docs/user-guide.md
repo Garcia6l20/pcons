@@ -1833,16 +1833,53 @@ fmt = project.find_package("fmt")
 ```
 
 **Precedence**: first finder to return a result wins. `add_package_finder()` call prepends, so the most recently added finder is
-consulted first, then the defaults (PkgConfig, then System). A finder that comes up empty (wrong version, tool
+consulted first, then the defaults (PkgConfig, then System). A finder added
+after a package was already looked up still applies to every later lookup. A finder that comes up empty (wrong version, tool
 missing the package) falls through to the next, and the winning source is
 recorded on the package as a `found_by` property (e.g. `"pkg-config"`, `"rez+pkg-config"`,
 `"system"`). A finder whose tool isn't installed is skipped with a warning. Run with `--debug configure` (see [debug logging](cli.md#options)) to
 see which finder answered (or passed on) each package.
 
-Results are cached per `(name, version, components)` — including *negative*
-results, so repeated `find_package(..., required=False)` probes don't re-run
-the finder chain and its subprocesses; a later `required=True` call for the
-same failed key raises from the cache.
+Results are cached per `(environment, name, version, components)` — including
+*negative* results, so repeated `find_package(..., required=False)` probes
+don't re-run the finder chain and its subprocesses; a later `required=True`
+call for the same failed key raises from the cache.
+
+#### One search per environment
+
+A cross build and a host build must not share an answer: the host's headers are
+the wrong ones for the cross compiler, and using them fails much later as a
+missing header. So each environment searches its own chain and holds its own
+result.
+
+```python
+mcu = project.Environment(toolchain="gcc", name="mcu")
+mcu.apply_cross_preset(linux_cross(triple="aarch64-linux-gnu", sysroot="/opt/aarch64"))
+host = project.Environment(toolchain="gcc", name="host")
+
+zlib_mcu = project.find_package("zlib", env=mcu)    # searches /opt/aarch64
+zlib_host = project.find_package("zlib", env=host)  # searches this machine
+```
+
+An environment given a cross preset with a sysroot searches that sysroot and
+nothing else, through `PKG_CONFIG_SYSROOT_DIR` and `PKG_CONFIG_LIBDIR` for
+pkg-config and the sysroot's `usr/include` and `usr/lib` for the system finder.
+One with a cross preset and no sysroot searches nothing and raises
+`PackageNotFoundError`, which is the honest answer: pcons does not know where
+that target's packages are. Add a finder that does:
+
+```python
+project.add_package_finder(ConanFinder(config, profile="mcu"), env=mcu)
+```
+
+An `env=` finder is used in that environment only, and is tried before the
+project-wide ones. Without `env=`, a finder is used everywhere, which is what
+a single-environment project wants.
+
+Omitting `env=` on `find_package()` uses the environment a target created
+without one would get, so a single-environment project needs none of this and
+behaves as before. Environments are told apart by their name, so scoping
+needs a named environment.
 
 See [Using Conan Packages](#using-conan-packages) below for more details about using Conan with pcons.
 

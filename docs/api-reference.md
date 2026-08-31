@@ -21,7 +21,9 @@ API:
 | `project.node(path)` | Get/create a file node |
 | `project.find_package(name, ...)` | Find external package (returns ImportedTarget) |
 | `project.find_package(name, system=True)` | Same, with the package's headers as system headers (`-isystem`) |
+| `project.find_package(name, env=env)` | Same, searching and caching for that environment only |
 | `project.add_package_finder(finder)` | Prepend a custom package finder |
+| `project.add_package_finder(finder, env=env)` | Same, used in that environment only |
 | `project.add_subdirectory(subdir, pick=None)` | Run a subdirectory's `pcons-build.py` as part of this project (also available as a bare `add_subdirectory()`) |
 | `project.add_configure_dependency(path)` | Declare a file the build description read, so editing it re-runs pcons |
 | `project.generated_input(path)` | A build-time-generated file to read: the path once it exists, else `None` |
