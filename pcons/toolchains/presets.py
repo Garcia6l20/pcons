@@ -16,8 +16,10 @@ Example:
 from __future__ import annotations
 
 import platform
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from pcons.configure.platform import Platform
 
 # Deprecated env_vars keys mapped to pcons tool names (see CrossPreset).
 _ENV_VAR_TOOL_MAP: dict[str, str] = {
@@ -26,6 +28,117 @@ _ENV_VAR_TOOL_MAP: dict[str, str] = {
     "LD": "link",
     "AR": "ar",
 }
+
+
+def _naming(
+    os_name: str,
+    *,
+    exe: str = "",
+    shared: str = ".so",
+    shared_prefix: str = "lib",
+    static: str = ".a",
+    static_prefix: str = "lib",
+    obj: str = ".o",
+) -> Platform:
+    return Platform(
+        os=os_name,
+        arch="",
+        is_64bit=True,
+        exe_suffix=exe,
+        shared_lib_suffix=shared,
+        shared_lib_prefix=shared_prefix,
+        static_lib_suffix=static,
+        static_lib_prefix=static_prefix,
+        object_suffix=obj,
+    )
+
+
+_TARGET_PLATFORMS: dict[str, Platform] = {
+    "android": _naming("android"),
+    "linux": _naming("linux"),
+    "darwin": _naming("darwin", shared=".dylib"),
+    "ios": _naming("ios", shared=".dylib"),
+    "windows-gnu": _naming("windows", exe=".exe", shared=".dll", shared_prefix=""),
+    "windows-msvc": _naming(
+        "windows",
+        exe=".exe",
+        shared=".dll",
+        shared_prefix="",
+        static=".lib",
+        static_prefix="",
+        obj=".obj",
+    ),
+}
+
+_TRIPLE_OS_MARKERS_MOST_SPECIFIC_FIRST: tuple[tuple[str, str], ...] = (
+    ("android", "android"),
+    ("mingw", "windows-gnu"),
+    ("windows-msvc", "windows-msvc"),
+    ("windows-gnu", "windows-gnu"),
+    ("ios", "ios"),
+    ("macos", "darwin"),
+    ("darwin", "darwin"),
+    ("linux", "linux"),
+)
+
+_TRIPLE_ARCHS: dict[str, str] = {
+    "aarch64": "arm64",
+    "aarch64_be": "arm64",
+    "arm64": "arm64",
+    "arm64e": "arm64",
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "i386": "i686",
+    "i586": "i686",
+    "i686": "i686",
+    "armv7a": "arm",
+    "armv7": "arm",
+    "armv7l": "arm",
+    "thumbv7a": "arm",
+    "arm": "arm",
+}
+
+_64BIT_ARCHS = frozenset(
+    {"arm64", "x86_64", "riscv64", "powerpc64", "powerpc64le", "mips64", "mips64el"}
+)
+
+
+def _triple_os_key(triple: str) -> str | None:
+    lowered = triple.lower()
+    for marker, key in _TRIPLE_OS_MARKERS_MOST_SPECIFIC_FIRST:
+        if marker in lowered:
+            return key
+    return None
+
+
+def _triple_arch(triple: str) -> str:
+    raw = triple.split("-")[0].lower()
+    return _TRIPLE_ARCHS.get(raw, raw)
+
+
+def target_platform_for_triple(triple: str) -> Platform | None:
+    """The platform a compiler triple describes, or None if unrecognized.
+
+    Reads the OS and CPU out of the triple and answers with the naming
+    conventions that go with them. A GNU-flavoured Windows triple (mingw)
+    gets ``.a`` static libraries and an MSVC one gets ``.lib``, because the
+    OS alone does not decide a name.
+
+    An unrecognized triple is None rather than an error, so a cross build
+    this table has never heard of keeps naming its outputs the way it does
+    today.
+
+    Args:
+        triple: A compiler target triple, e.g. ``"aarch64-linux-android35"``.
+
+    Returns:
+        The target platform, or None.
+    """
+    key = _triple_os_key(triple)
+    if key is None:
+        return None
+    arch = _triple_arch(triple)
+    return replace(_TARGET_PLATFORMS[key], arch=arch, is_64bit=arch in _64BIT_ARCHS)
 
 
 @dataclass(frozen=True)
@@ -47,6 +160,10 @@ class CrossPreset:
         env_vars: Deprecated alias for tool_cmds using environment-variable
                   vocabulary (CC→cc, CXX→cxx, LD→link, AR→ar). tool_cmds
                   wins on conflict.
+        target: The platform being built for, when the triple does not say it
+                or says it wrong. Left None, `target_platform` derives it from
+                `triple`. Same information as `arch`, in the place that
+                answers questions rather than as metadata.
     """
 
     name: str
@@ -57,6 +174,21 @@ class CrossPreset:
     extra_link_flags: tuple[str, ...] = ()
     tool_cmds: dict[str, str] = field(default_factory=dict)
     env_vars: dict[str, str] = field(default_factory=dict)
+    target: Platform | None = None
+
+    @property
+    def target_platform(self) -> Platform | None:
+        """The platform this preset builds for, or None if nothing says.
+
+        `target` when the preset carries one, otherwise derived from `triple`.
+        None means the reader assumes the host, which is also what a triple
+        the derivation does not recognize gets: today's answer, not an error.
+        """
+        if self.target is not None:
+            return self.target
+        if self.triple is None:
+            return None
+        return target_platform_for_triple(self.triple)
 
     def resolved_tool_cmds(self) -> dict[str, str]:
         """tool_cmds merged with the deprecated env_vars aliases."""

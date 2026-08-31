@@ -7,6 +7,8 @@ application of cross-compilation settings.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pcons.core.environment import Environment
@@ -17,6 +19,7 @@ from pcons.toolchains.presets import (
     ios,
     linux_cross,
     pyodide,
+    target_platform_for_triple,
 )
 
 
@@ -669,3 +672,227 @@ class TestEnvironmentRemembersItsTarget:
         )
 
         assert env.cross is None
+
+
+class TestTriplesNameAPlatform:
+    """target_platform_for_triple reads a target out of a compiler triple."""
+
+    def test_android_beats_the_linux_in_its_own_triple(self) -> None:
+        plat = target_platform_for_triple("aarch64-linux-android35")
+        assert plat is not None
+        assert plat.os == "android"
+        assert plat.arch == "arm64"
+        assert plat.is_64bit
+
+    def test_a_32_bit_android_triple(self) -> None:
+        plat = target_platform_for_triple("armv7a-linux-androideabi21")
+        assert plat is not None
+        assert plat.os == "android"
+        assert plat.arch == "arm"
+        assert not plat.is_64bit
+
+    def test_mingw_is_windows_with_gnu_names(self) -> None:
+        plat = target_platform_for_triple("x86_64-w64-mingw32")
+        assert plat is not None
+        assert plat.os == "windows"
+        assert plat.exe_suffix == ".exe"
+        assert (plat.shared_lib_prefix, plat.shared_lib_suffix) == ("", ".dll")
+        assert (plat.static_lib_prefix, plat.static_lib_suffix) == ("lib", ".a")
+        assert plat.object_suffix == ".o"
+
+    def test_msvc_is_windows_with_microsoft_names(self) -> None:
+        plat = target_platform_for_triple("x86_64-pc-windows-msvc")
+        assert plat is not None
+        assert (plat.static_lib_prefix, plat.static_lib_suffix) == ("", ".lib")
+        assert plat.object_suffix == ".obj"
+
+    def test_ios_and_darwin_use_dylib(self) -> None:
+        for triple in ("arm64-apple-ios15.0", "x86_64-apple-darwin"):
+            plat = target_platform_for_triple(triple)
+            assert plat is not None
+            assert plat.shared_lib_suffix == ".dylib"
+
+    def test_the_ios_simulator_keeps_its_arch(self) -> None:
+        plat = target_platform_for_triple("x86_64-apple-ios15.0-simulator")
+        assert plat is not None
+        assert plat.os == "ios"
+        assert plat.arch == "x86_64"
+
+    def test_a_linux_cross_triple(self) -> None:
+        plat = target_platform_for_triple("aarch64-linux-gnu")
+        assert plat is not None
+        assert plat.os == "linux"
+        assert plat.shared_lib_suffix == ".so"
+
+    @pytest.mark.parametrize(
+        "triple", ["wasm32-wasi", "wasm32-unknown-emscripten", "nonsense"]
+    )
+    def test_an_unrecognized_triple_is_none_not_an_error(self, triple: str) -> None:
+        assert target_platform_for_triple(triple) is None
+
+
+class TestPresetsNameAPlatform:
+    """CrossPreset.target_platform: explicit first, then the triple."""
+
+    def test_derived_from_the_triple(self) -> None:
+        preset = CrossPreset(name="p", arch="arm64", triple="aarch64-linux-android35")
+        plat = preset.target_platform
+        assert plat is not None
+        assert plat.os == "android"
+
+    def test_an_explicit_target_wins(self) -> None:
+        override = target_platform_for_triple("x86_64-w64-mingw32")
+        preset = CrossPreset(
+            name="p", arch="arm64", triple="aarch64-linux-android35", target=override
+        )
+        assert preset.target_platform is override
+
+    def test_no_triple_and_no_target_says_nothing(self) -> None:
+        assert CrossPreset(name="p", arch="arm64").target_platform is None
+
+    def test_the_android_factory_targets_android(self) -> None:
+        plat = android(ndk="/nowhere", arch="arm64-v8a").target_platform
+        assert plat is not None
+        assert plat.os == "android"
+        assert plat.shared_lib_prefix == "lib"
+        assert plat.shared_lib_suffix == ".so"
+        assert plat.exe_suffix == ""
+
+    def test_the_ios_factory_targets_ios(self) -> None:
+        plat = ios(arch="arm64").target_platform
+        assert plat is not None
+        assert plat.os == "ios"
+
+    def test_the_wasm_factories_say_nothing(self) -> None:
+        assert emscripten().target_platform is None
+
+
+def _make_unix_env_with_ar() -> Environment:
+    """_make_unix_env plus an archiver, which the android preset repoints."""
+    env = _make_unix_env()
+    ar = env.add_tool("ar")
+    ar.set("cmd", "ar")
+    ar.set("flags", [])
+    return env
+
+
+class TestEnvironmentKnowsItsTarget:
+    """env.target: what is being built for, defaulting to the host."""
+
+    def test_an_untouched_env_reads_the_host(self, test_project):  # noqa: F811
+        from pcons.configure.platform import get_platform
+
+        assert _make_unix_env().target == get_platform()
+
+    def test_an_android_preset_retargets_the_env(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env_with_ar()
+        env._toolchain = LlvmToolchain()
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+
+        assert env.target.os == "android"
+        assert env.target.shared_lib_prefix == "lib"
+        assert env.target.shared_lib_suffix == ".so"
+        assert env.target.exe_suffix == ""
+
+    def test_a_mingw_preset_names_gnu_windows(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        env.apply_cross_preset(
+            CrossPreset(name="mingw", arch="x86_64", triple="x86_64-w64-mingw32")
+        )
+
+        assert env.target.exe_suffix == ".exe"
+        assert env.target.shared_lib_suffix == ".dll"
+        assert env.target.static_lib_suffix == ".a"
+        assert env.target.static_lib_prefix == "lib"
+
+    def test_an_explicit_target_on_the_preset_wins(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        override = target_platform_for_triple("x86_64-w64-mingw32")
+        env.apply_cross_preset(
+            CrossPreset(
+                name="odd", arch="arm64", triple="aarch64-linux-gnu", target=override
+            )
+        )
+
+        assert env.target is override
+
+    def test_an_unrecognized_triple_falls_back_to_the_host(
+        self,
+        test_project,  # noqa: F811
+    ) -> None:
+        from pcons.configure.platform import get_platform
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        env.apply_cross_preset(
+            CrossPreset(name="odd", arch="sparc", triple="sparc9-sun-solaris")
+        )
+
+        assert env.target == get_platform()
+
+    def test_a_clone_carries_the_target(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env_with_ar()
+        env._toolchain = LlvmToolchain()
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+
+        clone = env.clone()
+        assert clone.target.os == "android"
+
+        clone.apply_cross_preset(
+            CrossPreset(name="mingw", arch="x86_64", triple="x86_64-w64-mingw32")
+        )
+        assert clone.target.os == "windows"
+        assert env.target.os == "android"
+
+    def test_a_refused_preset_leaves_the_target_alone(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env_with_ar()
+        env._toolchain = LlvmToolchain()
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+
+        with pytest.raises(ValueError, match="dedicated toolchain"):
+            env.apply_cross_preset(emscripten())
+
+        assert env.target.os == "android"
+
+    def test_no_toolchain_records_no_target(self, test_project):  # noqa: F811
+        from pcons.configure.platform import get_platform
+
+        env = Environment()
+        env.apply_cross_preset(android(ndk="/nowhere", arch="arm64-v8a"))
+
+        assert env.target == get_platform()
+
+
+class TestAndroidPresetAgainstARealNdk:
+    """The android() factory against an installed NDK, not a guessed layout."""
+
+    def test_the_tool_commands_it_names_exist(self, android_ndk) -> None:
+        preset = android(ndk=str(android_ndk), arch="arm64-v8a", api=21)
+
+        for tool, cmd in preset.resolved_tool_cmds().items():
+            assert Path(cmd).is_file(), f"{tool} -> {cmd}"
+
+    def test_the_sysroot_it_names_exists(self, android_ndk) -> None:
+        preset = android(ndk=str(android_ndk), arch="arm64-v8a", api=21)
+
+        assert preset.sysroot is not None
+        assert (Path(preset.sysroot) / "usr" / "include").is_dir()
+
+    @pytest.mark.parametrize("arch", ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"])
+    def test_every_supported_arch_has_a_wrapper(self, arch: str, android_ndk) -> None:
+        preset = android(ndk=str(android_ndk), arch=arch, api=21)
+
+        assert Path(preset.resolved_tool_cmds()["cxx"]).is_file()
