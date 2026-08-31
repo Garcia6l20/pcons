@@ -896,3 +896,154 @@ class TestAndroidPresetAgainstARealNdk:
         preset = android(ndk=str(android_ndk), arch=arch, api=21)
 
         assert Path(preset.resolved_tool_cmds()["cxx"]).is_file()
+
+
+_MINGW = CrossPreset(
+    name="mingw",
+    arch="x86_64",
+    triple="x86_64-w64-mingw32",
+    tool_cmds={
+        "cc": "x86_64-w64-mingw32-gcc",
+        "cxx": "x86_64-w64-mingw32-g++",
+        "link": "x86_64-w64-mingw32-g++",
+        "ar": "x86_64-w64-mingw32-ar",
+    },
+)
+
+_ANDROID = CrossPreset(
+    name="android",
+    arch="arm64-v8a",
+    triple="aarch64-linux-android35",
+    tool_cmds={
+        "cc": "aarch64-linux-android35-clang",
+        "cxx": "aarch64-linux-android35-clang++",
+        "link": "aarch64-linux-android35-clang++",
+        "ar": "llvm-ar",
+    },
+)
+
+
+def _cross_project(tmp_path, gcc_toolchain, preset=None):
+    """A project with one C source and an environment, optionally retargeted."""
+    from pcons.core.project import Project
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "foo.c").write_text("int f(void) { return 1; }\n")
+
+    project = Project("p", root_dir=tmp_path)
+    env = project.Environment(toolchain=gcc_toolchain)
+    if preset is not None:
+        env.apply_cross_preset(preset)
+    return project, env
+
+
+def _names(target) -> set[str]:
+    return {node.path.name for node in target.output_nodes}
+
+
+class TestCrossOutputNamingFollowsTheTarget:
+    """A cross build's artifacts are named for the platform they target."""
+
+    def test_a_host_build_is_named_the_way_it_always_was(self, tmp_path, gcc_toolchain):
+        from pcons.configure.platform import get_platform
+
+        project, env = _cross_project(tmp_path, gcc_toolchain)
+        prog = project.Program("foo", env, sources=["src/foo.c"])
+        shared = project.SharedLibrary("bar", env, sources=["src/foo.c"])
+        static = project.StaticLibrary("baz", env, sources=["src/foo.c"])
+        project.resolve()
+
+        host = get_platform()
+        assert _names(prog) == {host.exe_name("foo")}
+        assert host.shared_lib_name("bar") in _names(shared)
+        assert _names(static) == {host.static_lib_name("baz")}
+
+    def test_an_android_target_names_a_shared_library(self, tmp_path, gcc_toolchain):
+        project, env = _cross_project(tmp_path, gcc_toolchain, _ANDROID)
+        prog = project.Program("foo", env, sources=["src/foo.c"])
+        shared = project.SharedLibrary("bar", env, sources=["src/foo.c"])
+        project.resolve()
+
+        assert _names(prog) == {"foo"}
+        assert _names(shared) == {"libbar.so"}
+
+    def test_a_mingw_target_names_windows_artifacts(self, tmp_path, gcc_toolchain):
+        project, env = _cross_project(tmp_path, gcc_toolchain, _MINGW)
+        prog = project.Program("foo", env, sources=["src/foo.c"])
+        static = project.StaticLibrary("baz", env, sources=["src/foo.c"])
+        project.resolve()
+
+        assert _names(prog) == {"foo.exe"}
+        assert _names(static) == {"libbaz.a"}
+
+    def test_a_mingw_shared_library_is_a_dll(self, tmp_path, gcc_toolchain):
+        project, env = _cross_project(tmp_path, gcc_toolchain, _MINGW)
+        shared = project.SharedLibrary("bar", env, sources=["src/foo.c"])
+        project.resolve()
+
+        assert "bar.dll" in _names(shared)
+
+    def test_an_explicit_suffix_still_wins(self, tmp_path, gcc_toolchain):
+        project, env = _cross_project(tmp_path, gcc_toolchain, _ANDROID)
+        shared = project.SharedLibrary("bar", env, sources=["src/foo.c"])
+        shared.output_prefix = ""
+        shared.output_suffix = ".node"
+        project.resolve()
+
+        assert _names(shared) == {"bar.node"}
+
+    def test_an_explicit_output_name_still_wins(self, tmp_path, gcc_toolchain):
+        project, env = _cross_project(tmp_path, gcc_toolchain, _ANDROID)
+        shared = project.SharedLibrary("bar", env, sources=["src/foo.c"])
+        shared.output_name = "renamed"
+        project.resolve()
+
+        assert _names(shared) == {"librenamed.so"}
+
+    def test_two_environments_in_one_project_name_differently(
+        self, tmp_path, gcc_toolchain
+    ):
+        from pcons.core.project import Project
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "foo.c").write_text("int f(void) { return 1; }\n")
+
+        project = Project("p", root_dir=tmp_path)
+        host_env = project.Environment(toolchain=gcc_toolchain, name="host")
+        cross_env = project.Environment(toolchain=gcc_toolchain, name="cross")
+        cross_env.apply_cross_preset(_MINGW)
+
+        host_prog = project.Program("foo", host_env, sources=["src/foo.c"])
+        cross_prog = project.Program("foo", cross_env, sources=["src/foo.c"])
+        project.resolve()
+
+        from pcons.configure.platform import get_platform
+
+        assert _names(host_prog) == {get_platform().exe_name("foo")}
+        assert _names(cross_prog) == {"foo.exe"}
+
+
+class TestCrossInstallDirFollowsTheTarget:
+    """install_dir asks the environment what it is building for."""
+
+    def test_a_windows_target_installs_a_shared_library_to_bin(
+        self, tmp_path, gcc_toolchain
+    ):
+        from pcons.tools.install import install_dir
+
+        _, env = _cross_project(tmp_path, gcc_toolchain, _MINGW)
+
+        assert install_dir(env, "shared_library") == "bin"
+        assert install_dir(env, "static_library") == "lib"
+        assert install_dir(env, "program") == "bin"
+
+    def test_an_android_target_installs_a_shared_library_to_lib(
+        self, tmp_path, gcc_toolchain
+    ):
+        from pcons.tools.install import install_dir
+
+        _, env = _cross_project(tmp_path, gcc_toolchain, _ANDROID)
+
+        assert install_dir(env, "shared_library") == "lib"
