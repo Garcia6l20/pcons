@@ -755,12 +755,26 @@ class Project(_ProjectBuilders):
         """Get a target by name, optionally qualified.
 
         The full spelling is ``"project::target@env"``: ``::`` selects the
-        project, ``@`` the environment, and either may be left out. Two targets
-        may share a name when their environments differ, so an unqualified name
-        matching both raises rather than picking one.
+        project, ``@`` the environment, and either may be left out.
 
-        Returns None if not found and raise_if_missing is False;
-        otherwise raises KeyError.
+        Args:
+            name: The target name, qualified or not.
+            raise_if_missing: What to do when no target answers to *name*:
+                True raises KeyError, False returns None.
+            recursive: Search sub-projects too.
+
+        Returns:
+            The matching target, or None when there is none and
+            *raise_if_missing* is False.
+
+        Raises:
+            KeyError: When no target answers to *name* and *raise_if_missing*
+                is True. Also whenever several targets answer to it, on either
+                setting: two targets may share a name when their environments
+                differ, so such a name is not missing but underspecified. The
+                lookup refuses to pick one, and the message names the qualified
+                spellings. A caller asking whether a name is still free should
+                read that KeyError as "taken".
         """
 
         project, target_name, env_name = split_target_spec(name)
@@ -824,7 +838,7 @@ class Project(_ProjectBuilders):
         return None
 
     def get_targets(self, *names: str) -> list[Target]:
-        """Get multiple targets by name; raises KeyError if any is missing."""
+        """Get targets by name, raising KeyError if any is missing or ambiguous."""
         return [self.get_target(name) for name in names]
 
     @property
