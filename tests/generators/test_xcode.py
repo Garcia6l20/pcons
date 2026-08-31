@@ -120,10 +120,9 @@ class TestXcodeGeneratorDuplicateNames:
     def test_it_refuses_them(self, tmp_path, gcc_toolchain):
         project = Project("app", root_dir=tmp_path, build_dir=tmp_path)
         for name in ("mcu", "host"):
-            # A target takes the most recently created environment.
             env = project.Environment(toolchain=gcc_toolchain, name=name)
             env.build_prefix = name
-            Target("common", target_type="static_library")
+            Target("common", target_type="static_library", env=env)
 
         XcodeGenerator().generate(project)
         with pytest.raises(PconsError, match="common@mcu"):

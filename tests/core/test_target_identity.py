@@ -275,6 +275,52 @@ class TestAmbiguityMessage:
         assert "no spelling tells them apart" in message
 
 
+class TestOneRuleForAMissingEnvironment:
+    """`default_environment` and a target's fallback answer the same question.
+
+    They once differed twice over: first versus last registered, and whether
+    the search walked up to enclosing projects. A single-environment project
+    cannot tell them apart, which is how they drifted.
+    """
+
+    def test_they_agree_in_a_multi_environment_project(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        _two_envs(project, gcc_toolchain)
+
+        assert project._inherited_environment() is project.default_environment
+
+    def test_they_agree_on_an_enclosing_projects_environment(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        _two_envs(project, gcc_toolchain)
+        (tmp_path / "child").mkdir()
+        with project._enter_subdir("child"):
+            child = Project("child", root_dir=tmp_path / "child")
+
+        assert child._inherited_environment() is child.default_environment
+        assert child._inherited_environment() is project.default_environment
+
+    def test_they_agree_on_the_environment_an_inclusion_named(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        _mcu, host = _two_envs(project, gcc_toolchain)
+        (tmp_path / "child").mkdir()
+        with project._enter_subdir("child", env=host):
+            child = Project("child", root_dir=tmp_path / "child")
+            assert child._inherited_environment() is host
+            assert child.default_environment is host
+
+    def test_only_the_empty_case_differs(self, tmp_path):
+        """One raises and one returns None. That is the whole difference."""
+        project = Project("p", root_dir=tmp_path)
+
+        assert project._inherited_environment() is None
+        with pytest.raises(ValueError, match="No environments"):
+            _ = project.default_environment
+
+
 class TestTargetsWithoutAnEnvironment:
     """A builder taking no ``env`` still lands in the right environment."""
 
@@ -293,15 +339,21 @@ class TestTargetsWithoutAnEnvironment:
         assert iface.env is mcu
         assert iface.qualified_name == "child::common@mcu"
 
-    def test_it_falls_back_to_its_own_projects_last_environment(
+    def test_it_falls_back_to_the_projects_default_environment(
         self, tmp_path, gcc_toolchain
     ):
+        """The same environment `project.default_environment` names.
+
+        One question, one answer: a target that names no environment and a
+        caller reading the property must not land on different ones.
+        """
         project = Project("p", root_dir=tmp_path)
-        _mcu, host = _two_envs(project, gcc_toolchain)
+        mcu, _host = _two_envs(project, gcc_toolchain)
 
         iface = project.HeaderOnlyLibrary("common")
 
-        assert iface.env is host
+        assert iface.env is mcu
+        assert iface.env is project.default_environment
 
     def test_one_child_included_twice_makes_two_targets(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)

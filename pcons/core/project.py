@@ -918,6 +918,22 @@ class Project(_ProjectBuilders):
             ValueError: If no environment is registered here or in any
                 enclosing project.
         """
+        env = self._resolve_default_environment()
+        if env is None:
+            raise ValueError(
+                f"No environments have been registered in project '{self.name}' "
+                f"or any enclosing project."
+            )
+        return env
+
+    def _resolve_default_environment(self) -> Env | None:
+        """The environment a caller who named none is asking for.
+
+        One rule, so that two callers asking the same question cannot get two
+        answers. The public ``default_environment`` raises when there is none
+        and ``_inherited_environment`` returns None, and that is the only way
+        they differ.
+        """
         if Project.__default_env is not None:
             return Project.__default_env
         project: Project | None = self
@@ -925,22 +941,16 @@ class Project(_ProjectBuilders):
             if project._environments:
                 return project._environments[0]
             project = project._parent
-        raise ValueError(
-            f"No environments have been registered in project '{self.name}' "
-            f"or any enclosing project."
-        )
+        return None
 
     def _inherited_environment(self) -> Env | None:
         """The environment of a target created without one.
 
-        An ``add_subdirectory(..., env=...)`` in progress wins: the whole
-        included tree builds for that environment, targets a builder makes
-        without taking an ``env`` argument included. Without one, the project's
-        own last environment, which is all a single-environment project has.
+        ``default_environment`` without the raise: a target that names no
+        environment may end up with none, which is what a project that has
+        registered none gives it.
         """
-        if Project.__default_env is not None:
-            return Project.__default_env
-        return self._environments[-1] if self._environments else None
+        return self._resolve_default_environment()
 
     def Alias(
         self, name: str, *targets: Target | Node | list[Target | Node]
