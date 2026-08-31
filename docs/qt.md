@@ -53,6 +53,7 @@ qt = find_qt(
     modules=["Widgets"],  # short names; Core is always included
     version=">=6.4",  # optional constraint
     qt_root="/opt/Qt/6.7.0/gcc_64",  # optional; also $PCONS_QT_ROOT
+    probe="auto",  # "auto" | "pkg-config" | "qtpaths"
     private_headers=["Core"],  # opt-in to QtCore/x.y.z/private
 )
 
@@ -67,6 +68,39 @@ Probing order:
    distributions and Homebrew macOS; handles framework linking.
 2. **qtpaths/qmake introspection** (`qtpaths6 -query`) — for installs
    without pkg-config files, e.g. the official Qt installer and Windows.
+
+### Choosing the probe
+
+`probe=` runs one of them instead of both. `"auto"` is the default and the
+order above; `"pkg-config"` and `"qtpaths"` run that probe alone and fail
+if it finds nothing.
+
+A cross Qt is the reason this exists. Such an install has two halves: the
+libraries and headers you link against, built for the target, and the
+moc/uic/rcc binaries, built for the machine running the build. pkg-config
+cannot describe that split. Its `libexecdir` is `${prefix}/bin`, which for
+a Windows target Qt holds Windows executables, so `qt.tool_path("moc")`
+comes back `None` and nothing explains why. `qtpaths6 -query` on the same
+install reports `QT_HOST_BINS` and `QT_HOST_LIBEXECS`, which is where the
+runnable tools are, and the qtpaths probe prefers them.
+
+So when the target Qt ships complete `.pc` files, pkg-config wins the
+`"auto"` race with the wrong answer, and the way out is to ask for the
+other probe:
+
+```python
+host_qt = find_qt(project, host, modules=["Widgets"])
+cross_qt = find_qt(project, cross, modules=["Widgets"],
+                   qt_root="/opt/qt6-mingw", probe="qtpaths")
+```
+
+`qt_root` alone does not do this: it *scopes* the pkg-config search to
+that prefix rather than skipping it, so pointing it at the cross Qt only
+makes pkg-config answer with more confidence.
+
+`qt_module_available()` is unaffected: it asks whether a module is
+installed at all, not which install a target builds against, so it always
+tries both probes and takes no `probe` argument.
 
 Passing `env` adds the `qt` toolchain to the environment (tool paths for
 moc/uic/rcc), enabling the builders below. Discovery is cached per project

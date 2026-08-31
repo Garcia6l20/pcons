@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +18,7 @@ import pytest
 import pcons.toolchains.qt.finder as qt_finder
 from pcons.core.project import Project
 from pcons.packages.description import PackageDescription
-from pcons.toolchains.qt import QtNotFoundError, find_qt
+from pcons.toolchains.qt import QtNotFoundError, QtProbe, find_qt
 from pcons.toolchains.qt.finder import (
     _apply_platform_requirements,
     _closure_in_dep_order,
@@ -575,3 +576,118 @@ class TestPerEnvironmentInstalls:
     def test_qt_install_is_none_before_discovery(self, project):
         assert qt_finder.qt_install(project) is None
         assert qt_finder.qt_install(project, _qt_env(project, "host")) is None
+
+
+def _spy(name: str, log: list[str] | None = None):
+    """Patch a module-level probe with a delegating recorder.
+
+    Returns (patcher, calls); `calls` grows one entry per call, so a test
+    can assert a probe never ran rather than only that its result was
+    unused. A shared `log` records the order several probes ran in.
+    """
+    real = getattr(qt_finder, name)
+    calls: list[tuple] = []
+
+    def wrapper(*args):
+        calls.append(args)
+        if log is not None:
+            log.append(name)
+        return real(*args)
+
+    return patch.object(qt_finder, name, wrapper), calls
+
+
+class TestProbeSelection:
+    """`probe=` picks the discovery route.
+
+    A cross Qt ships .pc files describing the target and keeps its
+    moc/uic/rcc for the build machine, which pkg-config cannot express:
+    only the qtpaths probe reads QT_HOST_BINS/QT_HOST_LIBEXECS, and
+    pkg-config answers first by default.
+    """
+
+    def test_qtpaths_skips_pkgconfig_entirely(self, project, tmp_path):
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        spy, calls = _spy("_probe_pkgconfig")
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), p1, p2, spy:
+            qt = find_qt(project, modules=["Core"], probe="qtpaths")
+        assert calls == []
+        assert qt.found_via == "qtpaths6"
+        assert qt.prefix == tmp_path / "qt"
+
+    def test_pkgconfig_skips_qtpaths_entirely(self, project, tmp_path):
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        spy, calls = _spy("_probe_qtpaths")
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), p1, p2, spy:
+            qt = find_qt(project, modules=["Core"], probe="pkg-config")
+        assert calls == []
+        assert qt.found_via == "pkg-config"
+
+    def test_pkgconfig_only_fails_instead_of_falling_back(self, project, tmp_path):
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        spy, calls = _spy("_probe_qtpaths")
+        empty = _FakePkgConfig({}, available=False)
+        with _patch_pkgconfig(empty), p1, p2, spy:
+            with pytest.raises(QtNotFoundError, match="pkg-config"):
+                find_qt(project, modules=["Core"], probe="pkg-config")
+        assert calls == []
+
+    def test_the_default_is_auto_and_keeps_the_order(self, project, tmp_path):
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        order: list[str] = []
+        pc_patch, _ = _spy("_probe_pkgconfig", order)
+        qp_patch, _ = _spy("_probe_qtpaths", order)
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        empty = _FakePkgConfig({}, available=False)
+        with _patch_pkgconfig(empty), p1, p2, pc_patch, qp_patch:
+            qt = find_qt(project, modules=["Core"])
+        assert order == ["_probe_pkgconfig", "_probe_qtpaths"]
+        assert qt.found_via == "qtpaths6"
+
+    def test_auto_still_prefers_pkgconfig(self, project, tmp_path):
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        spy, calls = _spy("_probe_qtpaths")
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), p1, p2, spy:
+            qt = find_qt(project, modules=["Core"], probe="auto")
+        assert calls == []
+        assert qt.found_via == "pkg-config"
+
+    def test_one_probe_per_environment(self, project, tmp_path):
+        """The cross shape: host via pkg-config, target via qtpaths."""
+        host = _qt_env(project, "host")
+        cross = _qt_env(project, "cross")
+        query = _make_qt_tree(tmp_path / "qt", framework=False, modules=["Core"])
+        p1, p2 = _patch_qtpaths(query, tmp_path)
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), p1, p2:
+            on_host = find_qt(project, host, modules=["Core"])
+            on_cross = find_qt(project, cross, modules=["Core"], probe="qtpaths")
+        assert on_host is not on_cross
+        assert on_host.found_via == "pkg-config"
+        assert on_cross.found_via == "qtpaths6"
+        assert qt_finder.qt_install(project, cross) is on_cross
+
+    def test_an_unknown_probe_raises(self, project):
+        with pytest.raises(ValueError, match="probe='qmake'"):
+            find_qt(project, modules=["Core"], probe=cast(QtProbe, "qmake"))
+
+    def test_a_probe_disagreeing_with_the_cache_warns(self, project, caplog):
+        host = _qt_env(project, "host")
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), _no_qtpaths():
+            first = find_qt(project, host, modules=["Core"])
+            with caplog.at_level("WARNING", logger=qt_finder.logger.name):
+                again = find_qt(project, host, modules=["Core"], probe="qtpaths")
+        assert again is first
+        assert "probe='qtpaths'" in caplog.text
+        assert "already" in caplog.text
+
+    def test_a_matching_probe_does_not_warn(self, project, caplog):
+        host = _qt_env(project, "host")
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), _no_qtpaths():
+            find_qt(project, host, modules=["Core"])
+            with caplog.at_level("WARNING", logger=qt_finder.logger.name):
+                find_qt(project, host, modules=["Core"], probe="pkg-config")
+        assert caplog.text == ""
