@@ -301,6 +301,17 @@ declared*, not *what will actually run*, and a caller may not treat a host
 answer as proof of a host build. `env.cross` is the surface that distinguishes
 the two.
 
+The target platform is an **input** to naming, not a replacement for it. The
+toolchain still decides: `get_output_prefix`, `get_output_suffix` and
+`get_install_dir` take an optional target and produce the spelling that
+toolchain emits, because two toolchains targeting Windows disagree about static
+libraries. Passed nothing they answer for the build machine, which is what a
+caller with no environment in reach can honestly say.
+
+So a cross build's artifacts are named for the platform they target, and
+`install_dir(env, "shared_library")` sends a Windows DLL to `bin` even when the
+build runs on Linux.
+
 `CrossPreset.arch` stays metadata in the target ecosystem's own vocabulary
 (`arm64-v8a`); `env.target.arch` is the same CPU in the place that answers
 questions (`arm64`).

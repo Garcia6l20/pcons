@@ -56,11 +56,13 @@ def windows_toolchain(gcc_toolchain, monkeypatch):
     `BaseToolchain.__subclasses__()`, so a toolchain class defined here would
     leak into the generated preset names and fail the stub freshness test.
     """
-    monkeypatch.setattr(gcc_toolchain, "get_output_prefix", lambda target_type: "")
+    monkeypatch.setattr(
+        gcc_toolchain, "get_output_prefix", lambda target_type, target=None: ""
+    )
     monkeypatch.setattr(
         gcc_toolchain,
         "get_output_suffix",
-        lambda target_type: _WINDOWS_SUFFIXES.get(target_type, ".exe"),
+        lambda target_type, target=None: _WINDOWS_SUFFIXES.get(target_type, ".exe"),
     )
     return gcc_toolchain
 
