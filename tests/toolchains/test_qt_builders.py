@@ -362,3 +362,59 @@ class TestNodeVarNameGuard:
 
         with pytest.raises(ValueError, match="shadows one the generator defines"):
             generate_ninja(project)
+
+
+class TestTargetEnvironment:
+    """A Qt target belongs to the environment the caller passed.
+
+    The builders clone that environment for the moc/uic/rcc edges, and the
+    clone is unnamed. Creating the target with the clone made every Qt target
+    unnamed too, so one name could not be declared in two environments.
+    """
+
+    def test_one_name_in_two_environments(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        host = cxx_env_with_qt(project, name="host")
+        cross = cxx_env_with_qt(project, name="cross")
+
+        on_host = project.QtProgram("app", host, sources=["src/widget.cpp"])
+        on_cross = project.QtProgram("app", cross, sources=["src/widget.cpp"])
+
+        assert on_host.env is host
+        assert on_cross.env is cross
+        assert on_host.qualified_name == "qtb::app@host"
+        assert on_cross.qualified_name == "qtb::app@cross"
+
+    def test_one_environment_still_refuses_a_repeat(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        host = cxx_env_with_qt(project, name="host")
+        project.QtProgram("app", host, sources=["src/widget.cpp"])
+        with pytest.raises(ValueError, match="already exists in environment 'host'"):
+            project.QtProgram("app", host, sources=["src/widget.cpp"])
+
+    def test_moc_settings_do_not_reach_the_caller(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        env = cxx_env_with_qt(project, name="host")
+        env.cxx.includes = ["inc"]
+        env.cxx.defines = ["FOO=1"]
+
+        project.QtProgram("app", env, sources=["src/widget.cpp", "src/thing.h"])
+
+        assert list(env.qt.mocincludes) == []
+        assert list(env.qt.mocdefines) == []
+        assert list(env.qt.mocpredefs) == []
+
+    def test_resources_keep_the_environment(self, tmp_path, monkeypatch):
+        project = _make_project(tmp_path, monkeypatch)
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "assets" / "a.txt").write_text("a\n")
+        host = cxx_env_with_qt(project, name="host")
+        cross = cxx_env_with_qt(project, name="cross")
+        before = len(project.environments)
+
+        on_host = project.QtResources("assets", host, files=["assets/*.txt"])
+        on_cross = project.QtResources("assets", cross, files=["assets/*.txt"])
+
+        assert on_host.qualified_name == "qtb::assets@host"
+        assert on_cross.qualified_name == "qtb::assets@cross"
+        assert len(project.environments) == before
