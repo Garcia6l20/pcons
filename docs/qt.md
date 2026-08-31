@@ -82,6 +82,16 @@ Each environment gets its own install and its own module targets, told
 apart by `Qt6Core@host` and `Qt6Core@mcu`. Two environments without names
 share one install, because nothing tells them apart.
 
+A Qt target belongs to the environment it was declared in, like any other
+target, so one name can be built for both:
+
+```python
+project.QtProgram("app", host, sources=["main.cpp"], link=[host_qt.Widgets])
+project.QtProgram("app", mcu, sources=["main.cpp"], link=[mcu_qt.Core])
+```
+
+They are `app@host` and `app@mcu`, in separate build directories.
+
 ## The automoc scan
 
 `QtProgram` scans the target's sources, their same-basename headers, and
