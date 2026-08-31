@@ -65,7 +65,8 @@ _MODULE_DEPS: dict[str, tuple[str, ...]] = {
     "OpenGL": ("Gui",),
     "OpenGLWidgets": ("OpenGL", "Widgets"),
     "PrintSupport": ("Widgets",),
-    "Qml": ("Network",),
+    "Qml": ("Network", "QmlIntegration"),
+    "QmlIntegration": ("Core",),
     "Quick": ("Qml", "Gui"),
     "QuickControls2": ("Quick",),
     "QuickWidgets": ("Quick", "Widgets"),
@@ -77,6 +78,9 @@ _MODULE_DEPS: dict[str, tuple[str, ...]] = {
     "Multimedia": ("Gui", "Network"),
     "MultimediaWidgets": ("Multimedia", "Widgets"),
 }
+
+_HEADER_ONLY_MODULES: frozenset[str] = frozenset({"QmlIntegration"})
+"""Modules Qt ships with headers and no library, so nothing is linked."""
 
 # One QtPackage per project and environment name: a cross build and a host
 # build need different installs, and their module targets are told apart by
@@ -676,7 +680,9 @@ def _probe_qtpaths(
     def factory(name: str) -> ImportedTarget | None:
         # Create implicit deps first so link() targets exist.
         for dep in _MODULE_DEPS.get(name, ("Core",)):
-            if dep not in modules and factory(dep) is None:
+            if dep in modules:
+                continue
+            if factory(dep) is None and dep not in _HEADER_ONLY_MODULES:
                 return None
         if name in modules:
             return modules[name]
@@ -715,9 +721,15 @@ def _closure_in_dep_order(wanted: list[str]) -> list[str]:
 def _module_package(
     name: str, qt_version: str, libs: Path, headers: Path, is_framework: bool
 ) -> PackageDescription | None:
-    """PackageDescription for one Qt module from an introspected install."""
+    """PackageDescription for one Qt module from an introspected install.
+
+    A module listed in :data:`_HEADER_ONLY_MODULES` gets include
+    directories and no library, whatever the install layout: Qt builds no
+    framework for a module it builds no library for.
+    """
     define = f"QT_{name.upper()}_LIB"
-    if is_framework:
+    header_only = name in _HEADER_ONLY_MODULES
+    if is_framework and not header_only:
         framework_dir = libs / f"Qt{name}.framework"
         if not framework_dir.is_dir():
             return None
@@ -737,8 +749,8 @@ def _module_package(
         name=f"Qt6{name}",
         version=qt_version,
         include_dirs=[str(headers), str(module_headers)],
-        library_dirs=[str(libs)],
-        libraries=[f"Qt6{name}"],
+        library_dirs=[] if header_only else [str(libs)],
+        libraries=[] if header_only else [f"Qt6{name}"],
         defines=[define],
         prefix=str(libs.parent),
     )
