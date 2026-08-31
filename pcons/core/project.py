@@ -179,6 +179,28 @@ def _refuse_duplicate(existing: Target, new: Target) -> None:
     )
 
 
+def _ambiguous_target(name: str, where: str, matches: list[Target]) -> KeyError:
+    """Build the error for a name several targets answer to.
+
+    Advising a qualified spelling only helps when the environments are named:
+    unnamed ones qualify to the same string, so the advice would repeat the
+    spelling it just refused.
+    """
+    spellings = [t.qualified_name for t in matches]
+    if len(set(spellings)) == len(spellings):
+        advice = f"Name the environment, e.g. '{spellings[0]}'."
+    else:
+        advice = (
+            "Their environments have no name, so no spelling tells them apart. "
+            "Name the environment: project.Environment(..., name='host')."
+        )
+    # One line: KeyError renders its message with repr(), so a newline would
+    # reach the reader as a literal backslash-n.
+    return KeyError(
+        f"Multiple targets named '{name}' {where}: {', '.join(spellings)}. {advice}"
+    )
+
+
 class Project(_ProjectBuilders):
     """Top-level container for a pcons build.
 
@@ -802,13 +824,8 @@ class Project(_ProjectBuilders):
                     return None
                 matches = in_env
             if len(matches) > 1:
-                spellings = ", ".join(t.qualified_name for t in matches)
-                # One line: KeyError renders its message with repr(), so a
-                # newline would reach the reader as a literal backslash-n.
-                raise KeyError(
-                    f"Multiple targets named '{target_name}' in project "
-                    f"'{self.name}': {spellings}. Name the environment, "
-                    f"e.g. '{matches[0].qualified_name}'."
+                raise _ambiguous_target(
+                    target_name, f"in project '{self.name}'", matches
                 )
             if matches:
                 return matches[0]
@@ -825,11 +842,7 @@ class Project(_ProjectBuilders):
                 ) is not None:
                     targets_found.append(target)
             if len(targets_found) > 1:
-                raise KeyError(
-                    f"Multiple targets named '{name}' found in child projects: "
-                    f"{', '.join(t.qualified_name for t in targets_found)}\n"
-                    f"Use qualified names (e.g., '{targets_found[0].qualified_name}') to disambiguate."
-                )
+                raise _ambiguous_target(name, "in child projects", targets_found)
             if targets_found:
                 return targets_found[0]
 

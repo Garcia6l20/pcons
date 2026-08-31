@@ -227,3 +227,37 @@ class TestQualifiedSpelling:
         lib = project.StaticLibrary("common", env)
 
         assert lib.qualified_name == "p::common"
+
+
+class TestAmbiguityMessage:
+    def test_it_offers_a_spelling_that_selects_one(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        for env in _two_envs(project, gcc_toolchain):
+            project.StaticLibrary("common", env)
+
+        with pytest.raises(KeyError) as excinfo:
+            project.get_target("common")
+
+        message = str(excinfo.value)
+        assert "p::common@mcu, p::common@host" in message
+        assert "Name the environment, e.g. 'p::common@mcu'." in message
+
+    def test_it_asks_for_names_when_no_spelling_would_help(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        for name in ("one", "two"):
+            (tmp_path / name).mkdir()
+            with project._enter_subdir(name):
+                child = Project("child", root_dir=tmp_path / name)
+                env = child.Environment(toolchain=gcc_toolchain)
+                env.build_prefix = name
+                child.StaticLibrary("common", env)
+
+        with pytest.raises(KeyError) as excinfo:
+            project.get_target("common")
+
+        message = str(excinfo.value)
+        assert "child::common, child::common" in message
+        assert "no spelling tells them apart" in message
+
