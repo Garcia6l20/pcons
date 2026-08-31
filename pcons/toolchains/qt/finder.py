@@ -397,7 +397,14 @@ def qt_module_available(name: str, qt_root: str | Path | None = None) -> bool:
     headers = Path(query.get("QT_INSTALL_HEADERS", prefix / "include"))
     is_framework = (libs / "QtCore.framework").is_dir()
     return (
-        _module_package(name, query.get("QT_VERSION", ""), libs, headers, is_framework)
+        _module_package(
+            name,
+            query.get("QT_VERSION", ""),
+            libs,
+            headers,
+            is_framework,
+            _android_abi_suffix(query, libs),
+        )
         is not None
     )
 
@@ -650,13 +657,14 @@ def _probe_qtpaths(
     )
     libexec_dir = Path(query.get("QT_HOST_LIBEXECS") or bin_dir)
     is_framework = (libs / "QtCore.framework").is_dir()
+    abi_suffix = _android_abi_suffix(query, libs)
 
     # Validate before creating any targets: descriptions for the wanted
     # modules and their implicit deps must all resolve.
     order = _closure_in_dep_order(wanted)
     descriptions: dict[str, PackageDescription] = {}
     for name in order:
-        pkg = _module_package(name, qt_version, libs, headers, is_framework)
+        pkg = _module_package(name, qt_version, libs, headers, is_framework, abi_suffix)
         if pkg is None:
             if name in wanted:
                 return None
@@ -686,7 +694,7 @@ def _probe_qtpaths(
                 return None
         if name in modules:
             return modules[name]
-        pkg = _module_package(name, qt_version, libs, headers, is_framework)
+        pkg = _module_package(name, qt_version, libs, headers, is_framework, abi_suffix)
         return add_module(name, pkg) if pkg is not None else None
 
     return QtPackage(
@@ -718,14 +726,40 @@ def _closure_in_dep_order(wanted: list[str]) -> list[str]:
     return order
 
 
+def _android_abi_suffix(query: dict[str, str], libs: Path) -> str:
+    """ABI suffix a Qt for Android appends to every library file name.
+
+    Empty for any other Qt: only an ``android-clang`` install is looked
+    at, so no other platform pays for a directory scan. Qt reports *that*
+    it is Android and never *which* Android, so the ABI is read back from
+    the file names Core was installed under (``libQt6Core_arm64-v8a.so``
+    -> ``_arm64-v8a``). Assumed uniform across the install, which is what
+    a Qt installer produces: one ABI per prefix.
+    """
+    if query.get("QMAKE_XSPEC") != "android-clang":
+        return ""
+    for lib in sorted(libs.glob("libQt6Core_*.so")):
+        return lib.name[len("libQt6Core") : -len(".so")]
+    return ""
+
+
 def _module_package(
-    name: str, qt_version: str, libs: Path, headers: Path, is_framework: bool
+    name: str,
+    qt_version: str,
+    libs: Path,
+    headers: Path,
+    is_framework: bool,
+    abi_suffix: str = "",
 ) -> PackageDescription | None:
     """PackageDescription for one Qt module from an introspected install.
 
     A module listed in :data:`_HEADER_ONLY_MODULES` gets include
     directories and no library, whatever the install layout: Qt builds no
     framework for a module it builds no library for.
+
+    @p abi_suffix is appended to the library name, for a Qt for Android
+    whose libraries are named per ABI. A module with headers but no
+    library under that name is reported missing, like any absent module.
     """
     define = f"QT_{name.upper()}_LIB"
     header_only = name in _HEADER_ONLY_MODULES
@@ -745,12 +779,15 @@ def _module_package(
     module_headers = headers / f"Qt{name}"
     if not module_headers.is_dir():
         return None
+    library = f"Qt6{name}{abi_suffix}"
+    if abi_suffix and not header_only and not (libs / f"lib{library}.so").is_file():
+        return None
     return PackageDescription(
         name=f"Qt6{name}",
         version=qt_version,
         include_dirs=[str(headers), str(module_headers)],
         library_dirs=[] if header_only else [str(libs)],
-        libraries=[] if header_only else [f"Qt6{name}"],
+        libraries=[] if header_only else [library],
         defines=[define],
         prefix=str(libs.parent),
     )
