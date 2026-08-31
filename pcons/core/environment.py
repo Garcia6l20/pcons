@@ -141,6 +141,7 @@ class Environment(_EnvironmentStubs):
         "_use_origins",
         "_fanout_seen",
         "_name",
+        "_cross_preset",
         "defined_at",
     )
 
@@ -204,6 +205,7 @@ class Environment(_EnvironmentStubs):
         self._use_origins: dict[tuple[str, str], tuple[str, str]] = {}
         # Active only inside a set_*/apply_* fan-out (see _dedup_fanout)
         self._fanout_seen: set[Any] | None = None
+        self._cross_preset: Any = None
         if name is not None:
             validate_name("Environment", name)
         self._name = name
@@ -666,6 +668,7 @@ class Environment(_EnvironmentStubs):
 
         new_env._build_dir_base = self._build_dir_base
         new_env._build_dir_offset = self._build_dir_offset
+        new_env._cross_preset = self._cross_preset
 
         # Copy toolchain references (not cloned - they're shared)
         new_env._toolchain = self._toolchain
@@ -1202,11 +1205,28 @@ class Environment(_EnvironmentStubs):
             with self._dedup_fanout():
                 for toolchain in self.toolchains:
                     toolchain.apply_cross_preset(self, preset)
+            self._cross_preset = preset
         else:
             logger.warning(
                 "No toolchains configured; cannot apply cross-preset '%s'",
                 preset.name if hasattr(preset, "name") else preset,
             )
+
+    @property
+    def cross(self) -> Any:
+        """The cross preset this environment was retargeted with, or None.
+
+        None means "nothing said otherwise", never "this is a host build": an
+        environment retargeted by hand, by setting tool commands without a
+        preset, records nothing, and so does every ordinary build. A reader
+        must default to the host on None and may never refuse on it.
+
+        A second ``apply_cross_preset`` replaces the first: an environment has
+        one target, and the flags of the later preset are the ones that end up
+        deciding it.
+        """
+        preset: Any = self._cross_preset
+        return preset
 
     def Glob(self, pattern: str) -> list[FileNode]:
         """Find files matching a glob pattern.

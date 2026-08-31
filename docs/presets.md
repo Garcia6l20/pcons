@@ -271,6 +271,15 @@ ecosystem's names (`arm64-v8a`, `wasm32`), and mixing the two produces flags
 like `-arch arm64-v8a`. When a triple is present it already encodes the CPU;
 a separate arch flag is at best redundant.
 
+### The environment keeps the preset
+
+`env.apply_cross_preset(p)` keeps `p`, and `env.cross` reads it back, so the
+sysroot and the triple can be asked for instead of scraped out of flags. It is
+`None` for a host build, and also `None` for an environment retargeted by hand
+with tool commands and no preset: `None` means "nothing said otherwise", so a
+reader defaults to the host and never refuses on it. Applying a second cross
+preset replaces the first, since an environment has one target.
+
 ### Exactly two retarget mechanisms
 
 Every toolchain reaches a foreign target in one (or both) of two ways:
