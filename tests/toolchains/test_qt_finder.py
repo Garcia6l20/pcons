@@ -331,6 +331,24 @@ class TestAndroidAbiSuffix:
         assert f"Qt6Gui{abi}" in qt.Gui.public.link_libs
         assert f"Qt6Core{abi}" in qt.Core.public.link_libs
 
+    def test_an_android_install_with_no_suffixed_core_yields_nothing(
+        self, project, tmp_path
+    ):
+        """The gate says Android and the layout disagrees.
+
+        Better to fall back to the bare name than to invent a suffix: the
+        probe validates modules before creating targets, so an install this
+        odd fails as a module that is not there.
+        """
+        from pcons.toolchains.qt import finder as qt_finder
+
+        libs = tmp_path / "empty-lib"
+        libs.mkdir()
+
+        suffix = qt_finder._android_abi_suffix({"QMAKE_XSPEC": "android-clang"}, libs)
+
+        assert suffix == ""
+
     def test_the_suffix_reaches_the_link_line(self, project, tmp_path):
         query = _make_qt_tree(
             tmp_path / "qt", framework=False, modules=["Core"], abi="_arm64-v8a"
