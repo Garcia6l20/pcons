@@ -7,6 +7,7 @@ application of cross-compilation settings.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,45 @@ class TestAndroidPreset:
         preset = android(ndk="/fake/ndk")
         assert preset.sysroot is not None
         assert "sysroot" in preset.sysroot
+
+
+class TestAndroidStl:
+    """Which C++ runtime an Android artifact links.
+
+    Flags measured against NDK r28c rather than cited: the NDK links
+    ``libc++_shared.so`` on its own, so the shared default contributes
+    nothing and only the other two choices add a flag.
+    """
+
+    def test_the_default_adds_no_flag(self) -> None:
+        preset = android(ndk="/fake/ndk")
+        assert preset.extra_link_flags == ()
+
+    def test_shared_adds_no_flag(self) -> None:
+        preset = android(ndk="/fake/ndk", stl="c++_shared")
+        assert preset.extra_link_flags == ()
+
+    def test_static_links_a_private_copy(self) -> None:
+        preset = android(ndk="/fake/ndk", stl="c++_static")
+        assert preset.extra_link_flags == ("-static-libstdc++",)
+
+    def test_none_links_no_runtime(self) -> None:
+        preset = android(ndk="/fake/ndk", stl="none")
+        assert preset.extra_link_flags == ("-nostdlib++",)
+
+    @pytest.mark.parametrize("stl", ["c++_shared", "c++_static", "none"])
+    def test_no_choice_names_the_standard_library(self, stl: str) -> None:
+        """-stdlib=libc++ is what the NDK already does; naming it is noise."""
+        preset = android(ndk="/fake/ndk", stl=stl)  # type: ignore[arg-type]
+        assert "-stdlib=libc++" not in preset.extra_link_flags
+
+    def test_unknown_stl_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown Android STL"):
+            android(ndk="/fake/ndk", stl="libstdc++")  # type: ignore[arg-type]
+
+    def test_the_stl_is_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            android("/fake/ndk", "arm64-v8a", 21, "c++_static")  # type: ignore[misc]
 
 
 class TestIosPreset:
@@ -896,6 +936,44 @@ class TestAndroidPresetAgainstARealNdk:
         preset = android(ndk=str(android_ndk), arch=arch, api=21)
 
         assert Path(preset.resolved_tool_cmds()["cxx"]).is_file()
+
+    @pytest.mark.parametrize(
+        "stl,shared_runtime",
+        [("c++_shared", True), ("c++_static", False), ("none", False)],
+    )
+    def test_the_stl_flags_produce_the_runtime_they_claim(
+        self, stl: str, shared_runtime: bool, android_ndk, tmp_path: Path
+    ) -> None:
+        """Link a shared library and read back what it depends on.
+
+        The unit tests above pin the flag; this pins what the flag does,
+        so a future NDK changing its default fails here rather than in a
+        user's APK.
+        """
+        preset = android(ndk=str(android_ndk), arch="arm64-v8a", api=21, stl=stl)  # type: ignore[arg-type]
+        source = tmp_path / "s.cpp"
+        source.write_text("#include <string>\nstd::string f() { return {}; }\n")
+        out = tmp_path / "libs.so"
+
+        subprocess.run(
+            [
+                preset.resolved_tool_cmds()["cxx"],
+                "-shared",
+                "-fPIC",
+                str(source),
+                *preset.extra_link_flags,
+                "-o",
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        readelf = Path(preset.resolved_tool_cmds()["ar"]).with_name("llvm-readelf")
+        needed = subprocess.run(
+            [str(readelf), "-d", str(out)], capture_output=True, text=True, check=True
+        ).stdout
+
+        assert ("libc++_shared.so" in needed) is shared_runtime
 
 
 _MINGW = CrossPreset(
