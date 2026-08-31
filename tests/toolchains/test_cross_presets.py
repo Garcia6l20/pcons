@@ -982,7 +982,8 @@ class TestAndroidPresetAgainstARealNdk:
             check=True,
             capture_output=True,
         )
-        readelf = Path(preset.resolved_tool_cmds()["ar"]).with_name("llvm-readelf")
+        ar = Path(preset.resolved_tool_cmds()["ar"])
+        readelf = ar.with_name(f"llvm-readelf{ar.suffix}")
         needed = subprocess.run(
             [str(readelf), "-d", str(out)], capture_output=True, text=True, check=True
         ).stdout
@@ -1102,19 +1103,23 @@ class TestCrossOutputNamingFollowsTheTarget:
         src.mkdir()
         (src / "foo.c").write_text("int f(void) { return 1; }\n")
 
+        from pcons.configure.platform import get_platform
+
+        host = get_platform()
+        cross_preset = _ANDROID if host.is_windows else _MINGW
+        cross_name = "foo" if host.is_windows else "foo.exe"
+
         project = Project("p", root_dir=tmp_path)
         host_env = project.Environment(toolchain=gcc_toolchain, name="host")
         cross_env = project.Environment(toolchain=gcc_toolchain, name="cross")
-        cross_env.apply_cross_preset(_MINGW)
+        cross_env.apply_cross_preset(cross_preset)
 
         host_prog = project.Program("foo", host_env, sources=["src/foo.c"])
         cross_prog = project.Program("foo", cross_env, sources=["src/foo.c"])
         project.resolve()
 
-        from pcons.configure.platform import get_platform
-
-        assert _names(host_prog) == {get_platform().exe_name("foo")}
-        assert _names(cross_prog) == {"foo.exe"}
+        assert _names(host_prog) == {host.exe_name("foo")}
+        assert _names(cross_prog) == {cross_name}
 
 
 class TestCrossInstallDirFollowsTheTarget:

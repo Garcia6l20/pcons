@@ -274,6 +274,9 @@ def android(
     else:
         host_tag = "windows-x86_64"
 
+    wrapper_ext = ".cmd" if host_system == "windows" else ""
+    binary_ext = ".exe" if host_system == "windows" else ""
+
     toolchain_dir = ndk_path / "toolchains" / "llvm" / "prebuilt" / host_tag
     sysroot = str(toolchain_dir / "sysroot")
     bin_dir = toolchain_dir / "bin"
@@ -285,10 +288,10 @@ def android(
         sysroot=sysroot,
         extra_link_flags=_ANDROID_STL_LINK_FLAGS[stl],
         tool_cmds={
-            "cc": str(bin_dir / f"{triple}-clang"),
-            "cxx": str(bin_dir / f"{triple}-clang++"),
-            "link": str(bin_dir / f"{triple}-clang++"),
-            "ar": str(bin_dir / "llvm-ar"),
+            "cc": str(bin_dir / f"{triple}-clang{wrapper_ext}"),
+            "cxx": str(bin_dir / f"{triple}-clang++{wrapper_ext}"),
+            "link": str(bin_dir / f"{triple}-clang++{wrapper_ext}"),
+            "ar": str(bin_dir / f"llvm-ar{binary_ext}"),
         },
     )
 
