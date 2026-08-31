@@ -498,12 +498,19 @@ class Target:
         builder: Builder | None = None,
         defined_at: SourceLocation | None = None,
         project: Project | None = None,
+        env: Environment | None = None,
     ) -> None:
         """Create a target. Toolchains define their own target_type strings.
 
         ``project`` is the owning project; builder factories pass the project
         they were reached through. Without it, the most recently created
         project owns the target (fine in a single-project script).
+
+        ``env`` is the environment the target builds in. A builder that has one
+        passes it here rather than assigning it afterwards: a target's name and
+        environment are its identity, and the project checks that identity as
+        soon as the target is registered, which happens before ``__init__``
+        returns.
         """
         _validate_target_name(name)
         self.name = name
@@ -517,7 +524,7 @@ class Target:
         self.defined_at = defined_at or get_caller_location()
         self._collected_requirements: UsageRequirements | None = None
         self.target_type: str | None = target_type
-        self._env: Environment | None = None
+        self._env: Environment | None = env
         self.intermediate_nodes: list[FileNode] = []
         self.output_nodes: list[FileNode] = []
         self._resolved: bool = False

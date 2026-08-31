@@ -1621,8 +1621,8 @@ class Environment(_EnvironmentStubs):
             name,
             target_type="command",
             defined_at=get_caller_location(),
+            env=self,
         )
-        cmd_target._env = self
         cmd_target._builder_name = "Command"
 
         # Register nodes with the environment and add to target

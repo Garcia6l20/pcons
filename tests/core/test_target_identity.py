@@ -72,6 +72,19 @@ class TestDuplicateNames:
         name = f"{prefix}common{suffix}"
         assert paths == {f"build/mcu/{name}", f"build/host/{name}"}
 
+    def test_the_order_they_are_declared_in_does_not_matter(
+        self, tmp_path, gcc_toolchain
+    ):
+        """The check reads each target's own environment, not the project's last."""
+        project = Project("p", root_dir=tmp_path)
+        mcu, host = _two_envs(project, gcc_toolchain)
+
+        first = project.StaticLibrary("common", host)
+        second = project.StaticLibrary("common", mcu)
+
+        assert first.env is host
+        assert second.env is mcu
+
     def test_the_same_environment_twice_is_refused(self, tmp_path, gcc_toolchain):
         project = Project("p", root_dir=tmp_path)
         env = project.Environment(toolchain=gcc_toolchain, name="mcu")
