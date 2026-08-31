@@ -772,6 +772,37 @@ class TestProbeSelection:
         assert "probe='qtpaths'" in caplog.text
         assert "already" in caplog.text
 
+    def test_a_qt_root_disagreeing_with_the_cache_warns(
+        self, project, tmp_path, caplog
+    ):
+        """Discovery is cached per environment, so a later root cannot move it."""
+        host = _qt_env(project, "host")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), _no_qtpaths():
+            first = find_qt(project, host, modules=["Core"])
+            with caplog.at_level("WARNING", logger=qt_finder.logger.name):
+                again = find_qt(project, host, modules=["Core"], qt_root=elsewhere)
+        assert again is first
+        assert f"qt_root={elsewhere}" in caplog.text
+        assert "already" in caplog.text
+
+    def test_both_disagreeing_are_named_together(self, project, tmp_path, caplog):
+        host = _qt_env(project, "host")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), _no_qtpaths():
+            find_qt(project, host, modules=["Core"])
+            with caplog.at_level("WARNING", logger=qt_finder.logger.name):
+                find_qt(
+                    project,
+                    host,
+                    modules=["Core"],
+                    qt_root=elsewhere,
+                    probe="qtpaths",
+                )
+        assert f"qt_root={elsewhere} and probe='qtpaths'" in caplog.text
+
     def test_a_matching_probe_does_not_warn(self, project, caplog):
         host = _qt_env(project, "host")
         with _patch_pkgconfig(_FakePkgConfig(_LINUX_PCS)), _no_qtpaths():
