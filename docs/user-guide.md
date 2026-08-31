@@ -3981,7 +3981,7 @@ from pcons.toolchains.presets import android, ios, linux_cross, pyodide
 # made of several shared libraries needs one shared C++ runtime, or each
 # library gets its own and exceptions stop crossing between them. Use
 # stl="c++_static" only for a single artifact.
-env.apply_cross_preset(android(ndk="~/android-ndk", arch="arm64-v8a"))
+env.apply_cross_preset(android(ndk="~/android-ndk", arch="arm64-v8a", api=35))
 
 # iOS — works with both the Swift and LLVM (C/C++/Objective-C++) toolchains;
 # the iPhoneOS SDK is resolved via xcrun unless sdk= is given
@@ -4017,7 +4017,7 @@ project.Program("hello", env, sources=["src/hello.c"])
 
 | Factory | Key Arguments | Description |
 |---------|--------------|-------------|
-| `android(ndk, arch, api, *, stl)` | `arch`: arm64-v8a, armeabi-v7a, x86_64, x86; `api`: minimum API level (default 21); `stl`: `c++_shared` (default), `c++_static`, `none` | Android NDK cross-compilation |
+| `android(ndk, arch, *, api, stl)` | `arch`: arm64-v8a, armeabi-v7a, x86_64, x86; `api`: minimum API level, required; `stl`: `c++_shared` (default), `c++_static`, `none` | Android NDK cross-compilation |
 | `ios(arch, min_version, sdk)` | `arch`: arm64 or x86_64 (simulator); `min_version`: deployment target | iOS cross-compilation |
 | `emscripten(emsdk)` | `emsdk`: path to Emscripten SDK (optional if emcc in PATH) | WebAssembly via Emscripten (requires `toolchain="emscripten"`) |
 | `wasi_sdk(sdk_path)` | `sdk_path`: path to wasi-sdk (optional, auto-detected) | WebAssembly via wasi-sdk (requires `toolchain="wasi"`) |
