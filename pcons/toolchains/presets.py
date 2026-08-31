@@ -18,6 +18,7 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Literal
 
 from pcons.configure.platform import Platform
 
@@ -201,22 +202,51 @@ class CrossPreset:
         return cmds
 
 
+_ANDROID_STL_LINK_FLAGS: dict[str, tuple[str, ...]] = {
+    "c++_shared": (),
+    "c++_static": ("-static-libstdc++",),
+    "none": ("-nostdlib++",),
+}
+
+AndroidStl = Literal["c++_shared", "c++_static", "none"]
+
+
 def android(
     ndk: str,
     arch: str = "arm64-v8a",
     api: int = 21,
+    *,
+    stl: AndroidStl = "c++_shared",
 ) -> CrossPreset:
     """Create a cross-compilation preset for Android NDK.
+
+    An app made of more than one shared library needs ``c++_shared``, or
+    each library carries its own C++ runtime and static initializers,
+    ``std::type_info`` comparisons and exceptions stop working across
+    library boundaries. That is the NDK's own default, so it adds no flag.
+
+    Shipping ``libc++_shared.so`` into an APK is a packaging step this
+    preset does not perform: it describes how to compile and link, not
+    what the package contains.
 
     Args:
         ndk: Path to the Android NDK root directory.
         arch: Android architecture name. Supported values:
               "arm64-v8a", "armeabi-v7a", "x86_64", "x86".
         api: Minimum Android API level (default: 21).
+        stl: C++ runtime to link. "c++_shared" is the NDK default and one
+             runtime shared by every library. "c++_static" links a private
+             copy into each artifact. "none" links no C++ runtime, leaving
+             its symbols undefined for whoever links last.
 
     Returns:
         CrossPreset configured for Android.
     """
+    if stl not in _ANDROID_STL_LINK_FLAGS:
+        raise ValueError(
+            f"Unknown Android STL '{stl}'. "
+            f"Supported: {', '.join(_ANDROID_STL_LINK_FLAGS)}"
+        )
     triple_map = {
         "arm64-v8a": "aarch64-linux-android",
         "armeabi-v7a": "armv7a-linux-androideabi",
@@ -250,6 +280,7 @@ def android(
         arch=arch,
         triple=triple,
         sysroot=sysroot,
+        extra_link_flags=_ANDROID_STL_LINK_FLAGS[stl],
         tool_cmds={
             "cc": str(bin_dir / f"{triple}-clang"),
             "cxx": str(bin_dir / f"{triple}-clang++"),
