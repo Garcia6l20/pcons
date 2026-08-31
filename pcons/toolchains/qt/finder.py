@@ -86,6 +86,17 @@ _qt_installs: weakref.WeakKeyDictionary[Project, dict[str | None, QtPackage]] = 
 )
 
 
+QtProbe = Literal["auto", "pkg-config", "qtpaths"]
+"""Which probe :func:`find_qt` may run: both in order, or one only."""
+
+_PROBES: tuple[QtProbe, ...] = ("auto", "pkg-config", "qtpaths")
+
+
+def _probe_used(qt: QtPackage) -> QtProbe:
+    """Which probe located *qt*, as a :data:`QtProbe` value."""
+    return "pkg-config" if qt.found_via == "pkg-config" else "qtpaths"
+
+
 def _install_key(project: Project, env: Environment | None) -> str | None:
     """The cache slot an install lands in.
 
@@ -224,6 +235,7 @@ def find_qt(
     modules: Sequence[str],
     version: str | None = None,
     qt_root: str | Path | None = None,
+    probe: QtProbe = "auto",
     private_headers: Sequence[str] = (),
     required: Literal[True] = True,
 ) -> QtPackage: ...
@@ -237,6 +249,7 @@ def find_qt(
     modules: Sequence[str],
     version: str | None = None,
     qt_root: str | Path | None = None,
+    probe: QtProbe = "auto",
     private_headers: Sequence[str] = (),
     required: Literal[False],
 ) -> QtPackage | None: ...
@@ -249,6 +262,7 @@ def find_qt(
     modules: Sequence[str],
     version: str | None = None,
     qt_root: str | Path | None = None,
+    probe: QtProbe = "auto",
     private_headers: Sequence[str] = (),
     required: bool = True,
 ) -> QtPackage | None:
@@ -271,6 +285,13 @@ def find_qt(
             the PCONS_QT_ROOT environment variable. First call for an
             environment wins: the cached install is reused by later calls
             for the same environment.
+        probe: Which probe to run. "auto" (default) tries pkg-config and
+            falls back to qtpaths. "pkg-config" and "qtpaths" run that one
+            only. A cross Qt whose .pc files describe the target while its
+            moc/uic/rcc run on the build machine needs probe="qtpaths":
+            only that probe reads QT_HOST_BINS and QT_HOST_LIBEXECS, and
+            pkg-config would otherwise answer first with a libexecdir full
+            of target executables.
         private_headers: Modules whose private headers should be added to
             the include path (e.g. ["Core"] for QtCore/x.y.z/private).
         required: If True (default), raise QtNotFoundError when Qt or any
@@ -279,6 +300,11 @@ def find_qt(
     Returns:
         A QtPackage, or None (only when required=False).
     """
+    if probe not in _PROBES:
+        raise ValueError(
+            f"find_qt: probe={probe!r} is not one of "
+            f"{', '.join(repr(p) for p in _PROBES)}."
+        )
     wanted = list(dict.fromkeys(["Core", *modules]))  # dedupe, Core first
     if qt_root is None:
         env_root = os.environ.get("PCONS_QT_ROOT", "").strip()
@@ -292,22 +318,31 @@ def find_qt(
         )
 
     qt = qt_install(project, env)
-    if qt is not None and qt_root is not None and not qt.prefix.is_relative_to(qt_root):
-        logger.warning(
-            "find_qt: qt_root=%s ignored — Qt %s at %s is already located "
-            "for this environment (discovery is cached; the first call wins).",
-            qt_root,
-            qt.version,
-            qt.prefix,
-        )
+    if qt is not None:
+        ignored: list[str] = []
+        if qt_root is not None and not qt.prefix.is_relative_to(qt_root):
+            ignored.append(f"qt_root={qt_root}")
+        if probe != "auto" and _probe_used(qt) != probe:
+            ignored.append(f"probe={probe!r}")
+        if ignored:
+            logger.warning(
+                "find_qt: %s ignored — Qt %s at %s (found via %s) is already "
+                "located for this environment (discovery is cached; the first "
+                "call wins).",
+                " and ".join(ignored),
+                qt.version,
+                qt.prefix,
+                qt.found_via,
+            )
     if qt is None:
-        qt = _probe_pkgconfig(wanted, version, qt_root, env)
-        if qt is None:
+        if probe in ("auto", "pkg-config"):
+            qt = _probe_pkgconfig(wanted, version, qt_root, env)
+        if qt is None and probe in ("auto", "qtpaths"):
             qt = _probe_qtpaths(wanted, version, qt_root, env)
         if qt is None:
             if not required:
                 return None
-            raise QtNotFoundError(_not_found_message(wanted, version, qt_root))
+            raise QtNotFoundError(_not_found_message(wanted, version, qt_root, probe))
         _qt_installs.setdefault(project, {})[_install_key(project, env)] = qt
     elif version is not None and not _version_satisfies(qt.version, version):
         if not required:
@@ -341,7 +376,10 @@ def qt_module_available(name: str, qt_root: str | Path | None = None) -> bool:
     """Cheap existence probe for one Qt module (no targets created).
 
     Used by test harnesses and feature guards; find_qt() is the real
-    discovery entry point.
+    discovery entry point. Unlike find_qt this always tries pkg-config
+    then qtpaths: it answers "is this module installed anywhere", not
+    "which install will be built against", so it has no ``probe``
+    parameter.
     """
     root = Path(qt_root) if qt_root else None
     finder = _pkgconfig_finder(root)
@@ -361,18 +399,24 @@ def qt_module_available(name: str, qt_root: str | Path | None = None) -> bool:
 
 
 def _not_found_message(
-    wanted: list[str], version: str | None, qt_root: Path | None
+    wanted: list[str],
+    version: str | None,
+    qt_root: Path | None,
+    probe: QtProbe = "auto",
 ) -> str:
-    probes = [
-        "pkg-config " + ", ".join(f"Qt6{m}" for m in wanted),
-        "qtpaths6/qtpaths/qmake6/qmake -query",
-    ]
+    probes = []
+    if probe in ("auto", "pkg-config"):
+        probes.append("pkg-config " + ", ".join(f"Qt6{m}" for m in wanted))
+    if probe in ("auto", "qtpaths"):
+        probes.append("qtpaths6/qtpaths/qmake6/qmake -query")
     lines = [
         f"Qt 6 not found (need modules: {', '.join(wanted)}"
         + (f", version {version}" if version else "")
         + ")."
     ]
     lines.append("Probed: " + "; ".join(probes) + ".")
+    if probe != "auto":
+        lines.append(f"probe={probe!r} ran that probe only.")
     if qt_root:
         lines.append(f"qt_root was set to {qt_root}.")
     lines.append(
