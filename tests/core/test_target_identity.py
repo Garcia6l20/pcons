@@ -174,6 +174,41 @@ class TestLookup:
         assert project.get_target("common") is lib
         assert project.get_target("p::common") is lib
 
+    def test_a_free_name_is_not_taken(self, tmp_path):
+        project = Project("p", root_dir=tmp_path)
+
+        assert project.has_target("common") is False
+
+    def test_a_single_match_is_taken(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="mcu")
+        project.StaticLibrary("common", env)
+
+        assert project.has_target("common") is True
+
+    def test_an_ambiguous_name_is_taken(self, tmp_path, gcc_toolchain):
+        """The lookup refuses to answer it, so the boolean answers for it."""
+        project = Project("p", root_dir=tmp_path)
+        for env in _two_envs(project, gcc_toolchain):
+            project.StaticLibrary("common", env)
+
+        assert project.has_target("common") is True
+        with pytest.raises(KeyError, match="Multiple targets named"):
+            project.get_target("common", raise_if_missing=False)
+
+    def test_a_sub_project_name_is_taken_only_when_searching_the_tree(
+        self, tmp_path, gcc_toolchain
+    ):
+        project = Project("p", root_dir=tmp_path)
+        (tmp_path / "child").mkdir()
+        with project._enter_subdir("child"):
+            child = Project("child", root_dir=tmp_path / "child")
+            env = child.Environment(toolchain=gcc_toolchain, name="mcu")
+            child.StaticLibrary("common", env)
+
+        assert project.has_target("common") is True
+        assert project.has_target("common", recursive=False) is False
+
 
 class TestQualifiedSpelling:
     def test_it_names_the_environment(self, tmp_path, gcc_toolchain):

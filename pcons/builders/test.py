@@ -42,18 +42,6 @@ if TYPE_CHECKING:
 _TARGET_NAME_BAD_CHARS = re.compile(r"[^\w./+-]")
 
 
-def _name_is_taken(project: Project, name: str) -> bool:
-    """Whether *name* is unavailable for a new target.
-
-    An ambiguous name raises rather than answering, and for this question that
-    is still a no: several targets already answer to it.
-    """
-    try:
-        return project.get_target(name, raise_if_missing=False) is not None
-    except KeyError:
-        return True
-
-
 def _make_internal_target_name(project: Project, user_name: str) -> str:
     """Compute a unique, Ninja-safe target name for a test.
 
@@ -68,7 +56,7 @@ def _make_internal_target_name(project: Project, user_name: str) -> str:
     base_name = f"test_{sanitized}"
     target_name = base_name
     counter = 1
-    while _name_is_taken(project, target_name):
+    while project.has_target(target_name):
         target_name = f"{base_name}_{counter}"
         counter += 1
     return target_name

@@ -841,6 +841,24 @@ class Project(_ProjectBuilders):
         """Get targets by name, raising KeyError if any is missing or ambiguous."""
         return [self.get_target(name) for name in names]
 
+    def has_target(self, name: str, recursive: bool = True) -> bool:
+        """Whether some target already answers to *name*.
+
+        A name matching targets in several environments counts as taken:
+        several targets answer to it, which is what the caller is asking. Use
+        this rather than ``get_target(..., raise_if_missing=False) is not
+        None``, which raises on that case.
+
+        Args:
+            name: The target name, qualified or not.
+            recursive: Search sub-projects too.
+        """
+        try:
+            found = self.get_target(name, raise_if_missing=False, recursive=recursive)
+        except KeyError:
+            return True
+        return found is not None
+
     @property
     def targets(self) -> list[Target]:
         """Get all registered targets."""

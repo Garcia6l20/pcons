@@ -1444,12 +1444,6 @@ def _route_targets(
 
     from pcons.core.target import split_qualified_name
 
-    def owns_target(p: Project, token: str) -> bool:
-        try:
-            return p.get_target(token, raise_if_missing=False) is not None
-        except KeyError:
-            return True  # duplicate name inside this project: it owns it
-
     routed: dict[int, list[str]] = {id(p): [] for p in projects}
     for token in targets:
         if token in _TARGETS_IN_EVERY_PROJECT:
@@ -1473,7 +1467,7 @@ def _route_targets(
         alias_owners = [p for p in projects if token in p.tree_aliases]
         if alias_owners:
             confusable = [
-                p for p in projects if p not in alias_owners and owns_target(p, token)
+                p for p in projects if p not in alias_owners and p.has_target(token)
             ]
             if confusable:
                 names = ", ".join(
@@ -1490,7 +1484,7 @@ def _route_targets(
                 routed[id(p)].append(token)
             continue
 
-        owners = [p for p in projects if owns_target(p, token)]
+        owners = [p for p in projects if p.has_target(token)]
         if not owners:
             searched = ", ".join(p.name for p in projects)
             logger.error(
