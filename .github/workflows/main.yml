@@ -379,7 +379,7 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         # No "|| true" here, unlike the best-effort LaTeX install in the test
-        # job: example 73 skips itself when arm-none-eabi-gcc is absent, so a
+        # job: example 74 skips itself when arm-none-eabi-gcc is absent, so a
         # tolerated install failure would turn this job green while testing
         # nothing.
         run: |
@@ -397,8 +397,8 @@ jobs:
         run: |
           set -o pipefail
           uv run pytest tests/test_examples.py --cov=pcons --cov-report=xml -v \
-            -k "73_bare_metal" | tee result.txt
-          if grep -q '73_bare_metal-ninja] SKIPPED' result.txt; then
+            -k "74_bare_metal" | tee result.txt
+          if grep -q '74_bare_metal-ninja] SKIPPED' result.txt; then
             echo "::error::the bare-metal example skipped instead of running"
             exit 1
           fi

@@ -957,7 +957,7 @@ The rules:
 - **A script that makes its own environment is not overridden.** It said which
   environment it builds in, and including it twice collides.
 
-See `examples/74_multi_env` for a worked example: `parity/` is described once
+See `examples/75_multi_env` for a worked example: `parity/` is described once
 and built for both environments, with each environment's flags.
 
 ### Multiple projects in one script
@@ -1730,8 +1730,8 @@ $ pcons explain common@mcu
 An unqualified name that matches two targets raises and prints both spellings
 rather than picking one.
 
-See `examples/74_multi_env` for the smallest complete case, and
-`examples/73_bare_metal` for the cross-compiled one.
+See `examples/75_multi_env` for the smallest complete case, and
+`examples/74_bare_metal` for the cross-compiled one.
 
 ### Compiler Cache
 
