@@ -130,6 +130,32 @@ class TestEnvironmentNamesAreUnique:
 
         assert [env.name for env in child.environments] == ["host"]
 
+    def test_a_rename_onto_a_taken_name_is_refused(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        project.Environment(toolchain=gcc_toolchain, name="host")
+        mcu = project.Environment(toolchain=gcc_toolchain, name="mcu")
+
+        with pytest.raises(PconsError, match="already has an environment named"):
+            mcu.name = "host"
+
+        assert mcu.name == "mcu"
+
+    def test_a_rename_to_a_free_name_is_allowed(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="host")
+
+        env.name = "target"
+
+        assert env.name == "target"
+
+    def test_renaming_to_its_own_name_is_not_a_collision(self, tmp_path, gcc_toolchain):
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(toolchain=gcc_toolchain, name="host")
+
+        env.name = "host"
+
+        assert env.name == "host"
+
 
 class TestLookup:
     def test_an_ambiguous_name_raises(self, tmp_path, gcc_toolchain):

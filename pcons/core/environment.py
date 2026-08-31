@@ -307,6 +307,7 @@ class Environment(_EnvironmentStubs):
         elif name == "name":
             if value is not None:
                 validate_name("Environment", value)
+                self._refuse_taken_name(value)
             object.__setattr__(self, "_name", value)
         elif name in PLACEMENT_VARS:
             self._set_placement(name, value)
@@ -392,8 +393,8 @@ class Environment(_EnvironmentStubs):
         The name is half of a target's identity, so two environments sharing one
         would leave ``common@mcu`` meaning two things. Scoped to one project: a
         sub-project may have its own ``host`` environment, since its targets are
-        spelled ``child::app@host``. Called by ``Project.Environment()``, which
-        is where an environment gets its name.
+        spelled ``child::app@host``. Called wherever an environment gets its
+        name: the constructor, and assignment afterwards.
         """
         from pcons.core.errors import PconsError
 
