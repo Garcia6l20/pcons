@@ -1346,6 +1346,7 @@ class Project(_ProjectBuilders):
         resolver = Resolver(self)
         resolver.resolve()
         resolver.resolve_pending_sources()
+        resolver.report_unappliable_target_deps()
 
         self._register_implicit_configure_deps()
         self._check_pending_stages()

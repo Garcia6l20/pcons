@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for pcons.core.resolver."""
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -1512,3 +1513,76 @@ class TestOutputOnlyFileDeps:
         assert any(
             d.path.name == version.name for d in cmd.output_nodes[0].implicit_deps
         )
+
+
+class TestUnappliableDepWarning:
+    """A depends() edge that reached no node is reported at configure time."""
+
+    def test_warns_when_no_node_carries_the_dep(self, tmp_path, caplog):
+        project = Project("warn", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        gen = env.Command(
+            target=project.build_dir / "gen.txt",
+            command="echo gen > $TARGET",
+            name="gen",
+        )
+        cmd = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="after",
+        )
+        cmd.depends(gen)
+        project.resolve()
+
+        for node in cmd.intermediate_nodes + cmd.output_nodes:
+            node.implicit_deps.clear()
+
+        with caplog.at_level(logging.WARNING):
+            Resolver(project).report_unappliable_target_deps()
+
+        assert "'after' depends on 'gen'" in caplog.text
+
+    def test_quiet_when_the_dep_landed(self, tmp_path, caplog):
+        project = Project("warn", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        gen = env.Command(
+            target=project.build_dir / "gen.txt",
+            command="echo gen > $TARGET",
+            name="gen",
+        )
+        cmd = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="after",
+        )
+        cmd.depends(gen)
+
+        with caplog.at_level(logging.WARNING):
+            project.resolve()
+
+        assert "could not be attached" not in caplog.text
+
+    def test_quiet_for_a_forwarded_interface_dep(self, tmp_path, caplog, gcc_toolchain):
+        """The #111 shape: the interface target has no nodes, so its ordering
+        lives in its consumer. Nothing was dropped and nothing must warn."""
+        src_file = tmp_path / "main.c"
+        src_file.write_text("int main() { return 0; }")
+
+        project = Project("warn", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment(toolchain=gcc_toolchain)
+        env.add_tool("cc")
+        env.cc.objcmd = "gcc -c $SOURCE -o $TARGET"
+
+        gen = env.Command(name="gen", target="gen/gen.h", command="touch $TARGET")
+        header_lib = project.HeaderOnlyLibrary("headers")
+        header_lib.depends(gen)
+
+        app = project.Program("myapp", env, sources=[str(src_file)])
+        app.private.link_libs.append(header_lib)
+
+        with caplog.at_level(logging.WARNING):
+            project.resolve()
+
+        assert "could not be attached" not in caplog.text

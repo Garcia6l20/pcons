@@ -338,6 +338,38 @@ class Resolver:
                 iface_dep._implicit_target_deps_output_only, target.output_nodes
             )
 
+    def report_unappliable_target_deps(self) -> None:
+        """Warn about a depends() edge that reached no node.
+
+        The ordering silently does not hold in that case, and the build fails
+        later, if at all, so the configure run is the only place to say it.
+
+        Two shapes are not failures: a target that builds nothing of its own,
+        whose ordering is forwarded to its consumers instead, and a dependency
+        that builds nothing, which is the same case seen from the other side.
+        """
+        for target in self.project.targets:
+            nodes = target.intermediate_nodes + target.output_nodes
+            if not nodes:
+                continue
+            landed = {id(dep) for node in nodes for dep in node.implicit_deps}
+            deps = (
+                target._implicit_target_deps + target._implicit_target_deps_output_only
+            )
+            for dep in deps:
+                if not dep.output_nodes:
+                    continue
+                if any(id(node) in landed for node in dep.output_nodes):
+                    continue
+                logger.warning(
+                    "Target '%s' depends on '%s', but none of that target's "
+                    "outputs could be attached as an implicit dependency, so "
+                    "the build order is not enforced. Defined at %s.",
+                    target.name,
+                    dep.name,
+                    target.defined_at,
+                )
+
     def _apply_implicit_target_deps(
         self, dep_targets: list[Target], dest_nodes: list[FileNode]
     ) -> None:
