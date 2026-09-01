@@ -10,9 +10,18 @@ it no Android package can be built, however well the compile and link went.
     app = project.QtSharedLibrary("myapp", env, sources=[...])
     settings = android_deployment_settings(project, env, app=app)
 
-This writes one ABI and one application. Two things it deliberately does
-not answer, because androiddeployqt answers them itself and a pcons key
-would only be a second opinion:
+One application, and one ABI unless a mapping of ABI to environment is
+passed instead of an environment:
+
+    settings = android_deployment_settings(
+        project,
+        {"arm64-v8a": arm64_env, "x86_64": x86_64_env},
+        primary="arm64-v8a",
+        app=app,
+    )
+
+Two things it deliberately does not answer, because androiddeployqt
+answers them itself and a pcons key would only be a second opinion:
 
 - the transitive Qt library set, which it reads out of the staged ``.so``
   with ``llvm-readobj --needed-libs`` and out of Qt's own
@@ -27,7 +36,7 @@ broken one.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,8 +55,9 @@ _DESCRIPTION = (
 )
 
 #: Where each part of a Qt for Android install sits under its prefix. Read off
-#: Qt 6.11.1; keyed by ABI in the file, like ``qt`` itself, because a
-#: multi-ABI package may name a different prefix per ABI.
+#: Qt 6.11.1. Keyed by ABI in the file, like ``qt`` and ``architectures``: a
+#: multi-ABI settings file written by Qt's own CMake carries all seven as maps
+#: with one entry per ABI, even though these five values never vary.
 _QT_SUBDIRECTORIES: dict[str, str] = {
     "qtDataDirectory": ".",
     "qtLibExecsDirectory": "libexec",
@@ -132,19 +142,33 @@ def android_output_dir(env: Environment, app: Target | str) -> Path:
     return env.build_dir_for(Path()) / application_binary(app)
 
 
-def _library_dirs(project: Project, env: Environment) -> list[Path]:
-    """Absolute directories this environment's shared libraries land in.
+def _library_dirs(project: Project, envs: Iterable[Environment]) -> list[Path]:
+    """Absolute directories these environments' shared libraries land in.
 
     androiddeployqt copies the application's own dependencies out of these,
     so one that holds no library gives an APK that dies on its first dlopen,
     having built and installed without complaint.
 
+    One key, every environment: a package over several ABIs builds each
+    ABI's libraries somewhere of its own, and naming one ABI's directories
+    leaves the others' dependencies out with nothing said about it. Paths
+    are absolute because androiddeployqt reads them from wherever it runs.
+    """
+    found: dict[Path, None] = {}
+    for env in envs:
+        for directory in _one_environment_library_dirs(project, env):
+            found[directory] = None
+    return list(found)
+
+
+def _one_environment_library_dirs(project: Project, env: Environment) -> list[Path]:
+    """Where *env*'s shared libraries land.
+
     One directory per environment is only right for a project whose targets
     all sit in one source directory: a target places itself with its own
     build directory, which carries the subdirectory it was declared in. So
     this asks each shared library where it goes rather than asking the
-    environment once. Paths are absolute because androiddeployqt reads them
-    from wherever it runs.
+    environment once.
     """
     below = env.output_directory_for("shared_library")
 
@@ -183,55 +207,147 @@ def _android_preset(env: Environment) -> CrossPreset:
     return cross
 
 
+def _abi_environments(
+    env: Environment | Mapping[str, Environment], primary: str | None
+) -> tuple[dict[str, tuple[Environment, CrossPreset]], str]:
+    """The environments this package is built from, keyed by ABI.
+
+    A mapping rather than a sequence, because a mapping cannot disagree
+    with itself about which ABI an environment is for; the key is checked
+    against the preset all the same, since it is the caller who wrote it.
+
+    *primary* is asked for rather than taken as the first key: ``abi``,
+    ``extraPrefixDirs`` and the host tool paths all read from it, and
+    reordering a dict must not repoint them.
+    """
+    if not isinstance(env, Mapping):
+        cross = _android_preset(env)
+        entries = {cross.arch: (env, cross)}
+    elif not env:
+        raise ValueError(
+            "androiddeployqt settings need at least one environment. Pass "
+            "the environment itself, or {'arm64-v8a': env, ...}."
+        )
+    else:
+        entries = {abi: (one, _android_preset(one)) for abi, one in env.items()}
+        for abi, (_, cross) in entries.items():
+            if cross.arch != abi:
+                raise ValueError(
+                    f"The environment keyed '{abi}' is retargeted for "
+                    f"'{cross.arch}'. The key is the ABI its Android preset "
+                    f"names, and androiddeployqt reads both."
+                )
+
+    if primary is not None:
+        if primary not in entries:
+            raise ValueError(
+                f"primary='{primary}' is not one of the ABIs given: "
+                f"{', '.join(entries)}."
+            )
+        return entries, primary
+    if len(entries) > 1:
+        raise ValueError(
+            f"A package over several ABIs names its primary one: "
+            f"primary='...', one of {', '.join(entries)}. The 'abi' key, "
+            f"'extraPrefixDirs' and the host tool paths all come from it, so "
+            f"it is asked for rather than read off the first entry."
+        )
+    return entries, next(iter(entries))
+
+
+def _one_ndk_and_sdk(
+    entries: Mapping[str, tuple[Environment, CrossPreset]], primary: str
+) -> None:
+    """Refuse presets that disagree on what a settings file states once."""
+    _, first = entries[primary]
+    for abi, (_, cross) in entries.items():
+        for key, mine, theirs in (
+            ("ndk", first.ndk, cross.ndk),
+            ("sdk", first.sdk, cross.sdk),
+        ):
+            if mine != theirs:
+                raise ValueError(
+                    f"One settings file states one '{key}', and the presets "
+                    f"disagree: '{primary}' names {mine}, '{abi}' names "
+                    f"{theirs}."
+                )
+
+
 def deployment_settings(
-    project: Project, env: Environment, *, app: Target | str
+    project: Project,
+    env: Environment | Mapping[str, Environment],
+    *,
+    app: Target | str,
+    primary: str | None = None,
 ) -> dict:
     """The settings androiddeployqt reads, as a dict.
 
-    Every value comes from what the environment was retargeted with or from
-    the Qt installation found for it; nothing here searches for anything.
-    Use :func:`android_deployment_settings` to write it, unless you mean to
-    add keys of your own first.
+    Every value comes from what the environments were retargeted with or
+    from the Qt installation found for each; nothing here searches for
+    anything. Use :func:`android_deployment_settings` to write it, unless
+    you mean to add keys of your own first.
+
+    Seven keys are maps of ABI to value -- ``qt``, ``architectures`` and the
+    five ``qt*Directory`` ones -- and the rest are written once. ``abi``,
+    ``extraPrefixDirs`` and the host tool paths come from *primary* alone;
+    measured against a multi-ABI file Qt's own CMake wrote at 6.11.1, where
+    none of the three gains a second ABI's entry.
 
     Args:
         project: The project.
         env: The environment the application is built in, retargeted with
-             an Android preset carrying an ``sdk``.
+             an Android preset carrying an ``sdk``. For a package over
+             several ABIs, a mapping of ABI to environment: each key is the
+             ABI its environment's preset names.
         app: The application target, or its name. androiddeployqt looks for
              ``lib<name>_<abi>.so`` under the output directory, so this is
-             the name and not a path.
+             the name and not a path. One name whatever the ABI count:
+             androiddeployqt adds the suffix itself.
+        primary: The ABI ``abi`` names, and whose Qt ``extraPrefixDirs``
+                 and the host tools come from. Required once *env* names
+                 more than one ABI, and never read off the first key.
 
     Returns:
         The settings, ready for :func:`json.dump`.
 
     Raises:
-        ValueError: If the environment is not an Android cross environment,
-            its preset carries no SDK, or its ABI has no known NDK sysroot
-            directory.
-        QtNotFoundError: If no Qt installation was found for *env*.
+        ValueError: If an environment is not an Android cross environment,
+            its preset carries no SDK, its ABI has no known NDK sysroot
+            directory, a mapping key disagrees with its preset, the presets
+            disagree on the NDK or the SDK, or *primary* is missing or names
+            an ABI that was not given.
+        QtNotFoundError: If no Qt installation was found for an environment.
     """
     from pcons.toolchains.qt.finder import QtNotFoundError, qt_install
 
-    cross = _android_preset(env)
-    abi = cross.arch
+    entries, abi = _abi_environments(env, primary)
+    _one_ndk_and_sdk(entries, abi)
+    cross = entries[abi][1]
 
-    qt = qt_install(project, env)
-    if qt is None:
-        raise QtNotFoundError(
-            "androiddeployqt settings name the Qt built for the target. "
-            "Call find_qt() on this environment first."
-        )
+    prefixes: dict[str, str] = {}
+    for one_abi, (one_env, _) in entries.items():
+        qt = qt_install(project, one_env)
+        if qt is None:
+            raise QtNotFoundError(
+                f"androiddeployqt settings name the Qt built for the target, "
+                f"and the '{one_abi}' environment has none. Call find_qt() on "
+                f"every environment the package is built from."
+            )
+        prefixes[one_abi] = str(qt.prefix)
+        if one_abi == abi:
+            primary_qt = qt
 
     assert cross.ndk is not None and cross.ndk_host is not None
     ndk = Path(cross.ndk)
     host = cross.ndk_host
     stdcpp = ndk / "toolchains" / "llvm" / "prebuilt" / host / "sysroot" / "usr" / "lib"
+    environments = [one for one, _ in entries.values()]
 
     settings: dict[str, Any] = {
         "description": _DESCRIPTION,
-        "qt": {abi: str(qt.prefix)},
-        "extraPrefixDirs": [str(qt.prefix)],
-        "extraLibraryDirs": [str(d) for d in _library_dirs(project, env)],
+        "qt": prefixes,
+        "extraPrefixDirs": [prefixes[abi]],
+        "extraLibraryDirs": [str(d) for d in _library_dirs(project, environments)],
         "sdk": str(cross.sdk),
         "ndk": str(ndk),
         "ndk-host": host,
@@ -241,43 +357,51 @@ def deployment_settings(
         "useLLVM": True,
         "stdcpp-path": f"{stdcpp.as_posix()}/",
         "abi": abi,
-        "architectures": {abi: _SYSROOT_DIR[abi]},
+        "architectures": {one: _SYSROOT_DIR[one] for one in entries},
         "application-binary": application_binary(app),
         "android-legacy-packaging": False,
         "zstdCompression": False,
         "generate-java-qtquickview-contents": False,
     }
     for key, value in _QT_SUBDIRECTORIES.items():
-        settings[key] = {abi: value}
+        settings[key] = dict.fromkeys(entries, value)
     for key, tool in _HOST_TOOLS.items():
-        path = qt.tool_path(tool)
+        path = primary_qt.tool_path(tool)
         if path is not None:
             settings[key] = str(path)
-    settings.update(_qml_keys(project, env))
+    settings.update(_qml_keys(project, environments))
     return settings
 
 
-def _qml_keys(project: Project, env: Environment) -> dict[str, Any]:
+def _qml_keys(project: Project, envs: Iterable[Environment]) -> dict[str, Any]:
     """Where androiddeployqt should point qmlimportscanner, or not to run it.
 
     The scanner reads the filesystem, so it is given the QML *source*
-    directories of this environment's QML modules. Their generated ``qmldir``
-    is embedded in a resource and pcons writes it flat, so an import path
-    resolves none of the application's own modules -- measured against Qt
-    6.11.1 not to matter, as long as every module's source directory is a
-    root path: the Qt modules reported are then identical either way.
+    directories of these environments' QML modules. Their generated
+    ``qmldir`` is embedded in a resource and pcons writes it flat, so an
+    import path resolves none of the application's own modules -- measured
+    against Qt 6.11.1 not to matter, as long as every module's source
+    directory is a root path: the Qt modules reported are then identical
+    either way.
+
+    One scan serves the whole package, so both keys are the union over
+    every ABI's environment. The QML sources of two ABIs are usually the
+    same directory and collapse to one entry; their build directories are
+    not, and both are named.
     """
     from pcons.toolchains.qt.qml import qml_source_dirs
 
-    roots = [
-        _absolute(project, directory) for directory in qml_source_dirs(project, env)
-    ]
+    roots: dict[str, None] = {}
+    import_paths: dict[str, None] = {}
+    for env in envs:
+        for directory in qml_source_dirs(project, env):
+            roots[str(_absolute(project, directory))] = None
+        import_paths[str(_absolute(project, env.build_dir_for(Path())))] = None
     if not roots:
         return {"qml-skip-import-scanning": True}
-    import_paths = [_absolute(project, env.build_dir_for(Path()))]
     return {
-        "qml-root-path": [str(root) for root in roots],
-        "qml-import-paths": ",".join(str(path) for path in import_paths),
+        "qml-root-path": list(roots),
+        "qml-import-paths": ",".join(import_paths),
     }
 
 
@@ -289,9 +413,10 @@ def _absolute(project: Project, directory: Path) -> Path:
 
 def android_deployment_settings(
     project: Project,
-    env: Environment,
+    env: Environment | Mapping[str, Environment],
     *,
     app: Target | str,
+    primary: str | None = None,
     output: str | Path | None = None,
     package_name: str | None = None,
     package_source_dir: str | Path | None = None,
@@ -307,8 +432,11 @@ def android_deployment_settings(
 
     Args:
         project: The project.
-        env: The environment the application is built in.
+        env: The environment the application is built in, or a mapping of
+             ABI to environment for a package over several ABIs.
         app: The application target, or its name.
+        primary: The ABI ``abi``, ``extraPrefixDirs`` and the host tools
+                 come from. Required once *env* names more than one.
         output: Where to write it. Default:
                 ``<build_dir>/android-deployment-settings.json``.
         package_name: The Android package name ("org.example.myapp"). Left
@@ -331,7 +459,7 @@ def android_deployment_settings(
     Returns:
         The path written.
     """
-    settings = deployment_settings(project, env, app=app)
+    settings = deployment_settings(project, env, app=app, primary=primary)
     if package_name is not None:
         settings["android-package-name"] = package_name
     if package_source_dir is not None:
@@ -345,8 +473,10 @@ def android_deployment_settings(
         settings["sdkBuildToolsRevision"] = build_tools
 
     if output is None:
+        primary_env = _abi_environments(env, primary)[0][settings["abi"]][0]
         output = (
-            Path(env.get("build_dir", "build")) / "android-deployment-settings.json"
+            Path(primary_env.get("build_dir", "build"))
+            / "android-deployment-settings.json"
         )
     output = Path(output)
     if not output.is_absolute():

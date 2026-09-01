@@ -38,10 +38,12 @@ No system Gradle is needed, androiddeployqt brings its own wrapper.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pcons.configure.platform import get_platform
+from pcons.core.target import Target
 from pcons.toolchains.qt.android import (
     _android_preset,
     android_output_dir,
@@ -52,7 +54,6 @@ from pcons.toolchains.qt.android import (
 if TYPE_CHECKING:
     from pcons.core.environment import Environment
     from pcons.core.project import Project
-    from pcons.core.target import Target
     from pcons.toolchains.presets import CrossPreset
 
 
@@ -62,8 +63,37 @@ def stage_application_library(
     *,
     app: Target,
     output: str | Path | None = None,
+    name: str | None = None,
 ) -> Target:
     """Copy the application library where androiddeployqt reads it.
+
+    A package over several ABIs makes one call per environment, all with
+    the same *output*: androiddeployqt owns one output directory and reads
+    one ``libs/<abi>/`` out of it per ABI. The list of what they return
+    goes to :func:`android_apk` as ``staged``.
+
+    **Two packages over one application share one call.** The staging path
+    is derived from the application and the ABI, so calling this twice for
+    one application in one environment -- which is what a debug package and
+    a release package do when each is left to stage for itself -- derives
+    the same path twice, and pcons refuses::
+
+        pcons.core.errors.PconsError: targets 'myapp-apk-lib-arm64-v8a' and
+        'myapp-apk-lib-arm64-v8a_1' both build
+        myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so.
+        Each output file must have one producer: give one target a distinct
+        output_name or output_prefix, or split into multiple projects.
+
+    The refusal is right and the advice in it is not the answer here: there
+    is nothing to rename, because androiddeployqt reads that one path. Call
+    this once and give the result to every package as ``staged=``::
+
+        staged = stage_application_library(project, env, app=app)
+        debug = android_apk(project, env, app=app, settings=settings,
+                            staged=staged)
+        unsigned = android_apk(project, env, app=app, settings=settings,
+                               staged=staged, release=True,
+                               name=f"{app.name}-apk-release")
 
     Args:
         project: The project.
@@ -72,9 +102,13 @@ def stage_application_library(
         app: The application target, a shared library.
         output: The androiddeployqt output directory. Default:
                 :func:`~pcons.toolchains.qt.android.android_output_dir`.
+                Every ABI of one package passes the same one, which the
+                primary environment's default is.
+        name: Target name. Default ``<app>-apk-lib-<abi>``, which is
+              already distinct per ABI.
 
     Returns:
-        The staging target, one copy, named ``<app>-apk-lib``.
+        The staging target, one copy.
 
     Raises:
         ValueError: If the environment is not an Android cross environment.
@@ -82,7 +116,9 @@ def stage_application_library(
     abi = _android_preset(env).arch
     directory = Path(output) if output is not None else android_output_dir(env, app)
     staged = directory / "libs" / abi / application_library_name(app, abi)
-    return project.InstallAs(staged, app, name=f"{app.name}-apk-lib", no_prefix=True)
+    return project.InstallAs(
+        staged, app, name=name or f"{app.name}-apk-lib-{abi}", no_prefix=True
+    )
 
 
 def apk_path(
@@ -127,9 +163,9 @@ def android_apk(
     project: Project,
     env: Environment,
     *,
-    app: Target,
+    app: Target | str,
     settings: str | Path,
-    staged: Target | None = None,
+    staged: Target | Sequence[Target] | None = None,
     output: str | Path | None = None,
     release: bool = False,
     no_build: bool = False,
@@ -145,12 +181,17 @@ def android_apk(
         project: The project.
         env: The environment the application is built in, retargeted with
              an Android preset.
-        app: The application target, a shared library.
+        app: The application target, a shared library. Its name alone is
+             enough once *staged* is given.
         settings: The deployment settings file, from
                   :func:`~pcons.toolchains.qt.android.android_deployment_settings`.
-        staged: The staging target from :func:`stage_application_library`.
-                Made here when left out, so a package cannot be built
-                without the application in it.
+        staged: The staging target from :func:`stage_application_library`,
+                or one per ABI for a package over several. Made here when
+                left out, so a package cannot be built without the
+                application in it -- which is why a second package over the
+                same application must be given the first one's, rather than
+                letting this stage the same library a second time. See
+                :func:`stage_application_library`.
         output: The androiddeployqt output directory. Default:
                 :func:`~pcons.toolchains.qt.android.android_output_dir`.
         release: Build the release package. It is unsigned, so it installs
@@ -185,7 +226,14 @@ def android_apk(
 
     directory = Path(output) if output is not None else android_output_dir(env, app)
     if staged is None:
+        if isinstance(app, str):
+            raise ValueError(
+                f"android_apk() stages the application itself and needs the "
+                f"target to copy, not the name '{app}'. Pass the target, or "
+                f"stage it yourself and pass staged=."
+            )
         staged = stage_application_library(project, env, app=app, output=directory)
+    libraries = [staged] if isinstance(staged, Target) else list(staged)
 
     arguments = [
         "--input",
@@ -210,7 +258,7 @@ def android_apk(
         name=name or f"{application_binary(app)}-apk",
         target=produced,
         tool=tool,
-        source=[Path(settings), staged],
+        source=[Path(settings), *libraries],
         command=command,
     )
     if no_build:

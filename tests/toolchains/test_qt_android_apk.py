@@ -156,7 +156,7 @@ class TestItIsARealBuildEdge:
 
         staged = stage_application_library(app_project, env, app=_app(app_project, env))
 
-        assert staged.name == "myapp-apk-lib"
+        assert staged.name == "myapp-apk-lib-arm64-v8a"
 
 
 class TestWhatItRefuses:
@@ -274,7 +274,7 @@ class TestStaging:
         env = android_env()
         _apk(app_project, env, _app(app_project, env))
 
-        assert app_project.get_target("myapp-apk-lib", False) is not None
+        assert app_project.get_target("myapp-apk-lib-arm64-v8a", False) is not None
 
     def test_one_made_by_hand_is_used_as_it_is(self, app_project, deployable) -> None:
         env = android_env()
@@ -283,7 +283,7 @@ class TestStaging:
 
         _apk(app_project, env, app, staged=staged)
 
-        assert app_project.get_target("myapp-apk-lib_1", False) is None
+        assert app_project.get_target("myapp-apk-lib-arm64-v8a_1", False) is None
 
 
 class TestNoBuild:
@@ -644,3 +644,188 @@ class TestWhereTheSignedPackageGoes:
         assert signed_apk_path(env, "myapp", output="package") == Path(
             "package/build/outputs/apk/release/package-release-signed.apk"
         )
+
+
+ABIS = ("arm64-v8a", "x86_64")
+
+
+@pytest.fixture
+def two_abis(app_project, monkeypatch, tmp_path):
+    """One application built for two ABIs, each Qt found for its own env.
+
+    Both environments are named, which is what lets them hold a target of
+    the same name, and both carry a build_prefix, without which pcons
+    refuses the second library as a second producer of build/libmyapp.so.
+    """
+    installs = {
+        abi: fake_qt_for_android(
+            tmp_path / "qt", (*QT_HOST_TOOLS, "androiddeployqt"), abi
+        )
+        for abi in ABIS
+    }
+    envs = {}
+    for abi in ABIS:
+        env = android_env(abi, name=f"android-{abi}")
+        env.build_prefix = f"android-{abi}"
+        envs[abi] = env
+    by_env = {id(env): installs[abi] for abi, env in envs.items()}
+    monkeypatch.setattr(
+        "pcons.toolchains.qt.finder.qt_install",
+        lambda project, env=None: by_env.get(id(env)),
+    )
+    return envs
+
+
+class TestSeveralAbisInOnePackage:
+    """androiddeployqt owns one output directory and reads one library per
+    ABI out of it, so every ABI stages into the same directory."""
+
+    def _apps(self, project, envs):
+        return {abi: _app(project, env) for abi, env in envs.items()}
+
+    def _stage(self, project, envs):
+        """One output directory for the package, the primary's own."""
+        from pcons.toolchains.qt.android import android_output_dir
+
+        output = android_output_dir(envs["arm64-v8a"], "myapp")
+        return {
+            abi: stage_application_library(project, envs[abi], app=app, output=output)
+            for abi, app in self._apps(project, envs).items()
+        }
+
+    def test_each_abi_gets_its_own_subdirectory_of_one_package(
+        self, app_project, two_abis
+    ) -> None:
+        staged = self._stage(app_project, two_abis)
+        app_project.resolve()
+
+        package = Path("android-arm64-v8a/myapp/libs")
+        assert {abi: _staged_path(t) for abi, t in staged.items()} == {
+            "arm64-v8a": package / "arm64-v8a" / "libmyapp_arm64-v8a.so",
+            "x86_64": package / "x86_64" / "libmyapp_x86_64.so",
+        }
+
+    def test_both_libraries_carry_the_one_application_binary_name(
+        self, app_project, two_abis
+    ) -> None:
+        """androiddeployqt adds the ABI suffix to `application-binary`
+        itself, so the two files may differ only in that suffix. Read back
+        out of the settings rather than spelled a second time."""
+        settings = deployment_settings(
+            app_project, two_abis, app="myapp", primary="arm64-v8a"
+        )
+        staged = self._stage(app_project, two_abis)
+        app_project.resolve()
+
+        binary = settings["application-binary"]
+        assert {abi: _staged_path(t).name for abi, t in staged.items()} == {
+            abi: f"lib{binary}_{abi}.so" for abi in settings["architectures"]
+        }
+
+    def test_the_package_edge_waits_for_every_abi(self, app_project, two_abis) -> None:
+        """Nothing else makes androiddeployqt wait for the second ABI, and
+        without it the package is built successfully and is half empty."""
+        from ._qt_test_utils import generate_ninja
+
+        staged = self._stage(app_project, two_abis)
+        settings = android_deployment_settings(
+            app_project, two_abis, app="myapp", primary="arm64-v8a"
+        )
+        android_apk(
+            app_project,
+            two_abis["arm64-v8a"],
+            app="myapp",
+            settings=settings,
+            staged=list(staged.values()),
+        )
+
+        edge = _edge(
+            generate_ninja(app_project),
+            "android-arm64-v8a/myapp/build/outputs/apk/debug/myapp-debug.apk",
+        )
+        for abi in ABIS:
+            assert f"android-arm64-v8a/myapp/libs/{abi}/libmyapp_{abi}.so" in edge
+
+    def test_a_name_alone_will_not_do_the_staging(self, app_project, two_abis) -> None:
+        """The staging is a copy of a target, so there has to be one."""
+        with pytest.raises(ValueError, match="not the name"):
+            android_apk(
+                app_project, two_abis["arm64-v8a"], app="myapp", settings="s.json"
+            )
+
+
+class TestTwoPackagesOverOneApplication:
+    """A debug package and a release package, which is the normal case once
+    signing exists. The staging path comes from the application and the ABI,
+    so one environment stages one application once and both packages read
+    the one staged library."""
+
+    def _both(self, project, env, app, staged=None):
+        settings = android_deployment_settings(project, env, app=app)
+        debug = android_apk(project, env, app=app, settings=settings, staged=staged)
+        release = android_apk(
+            project,
+            env,
+            app=app,
+            settings=settings,
+            staged=staged,
+            release=True,
+            name=f"{app.name}-apk-release",
+        )
+        return debug, release
+
+    def test_one_staging_call_feeds_both_packages(
+        self, app_project, deployable
+    ) -> None:
+        """Read out of the build graph: both edges name the staged library,
+        and one edge produces it."""
+        from ._qt_test_utils import generate_ninja
+
+        env = android_env()
+        app = _app(app_project, env)
+        staged = stage_application_library(app_project, env, app=app)
+
+        self._both(app_project, env, app, staged=staged)
+        content = generate_ninja(app_project)
+
+        library = "myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so"
+        assert library in _edge(content, DEBUG_APK)
+        assert library in _edge(content, UNSIGNED)
+        produce = [
+            line
+            for line in content.splitlines()
+            if line.startswith(f"build {library}:")
+        ]
+        assert len(produce) == 1
+
+    def test_letting_each_package_stage_for_itself_still_raises(
+        self, app_project, deployable
+    ) -> None:
+        """The docstring that tells a caller to share the call is only true
+        while this refusal exists, so it is pinned here."""
+        from pcons.core.errors import PconsError
+
+        env = android_env()
+        app = _app(app_project, env)
+
+        self._both(app_project, env, app)
+
+        with pytest.raises(PconsError, match="both build"):
+            app_project.resolve()
+
+    def test_the_error_names_the_path_androiddeployqt_reads(
+        self, app_project, deployable
+    ) -> None:
+        """Which is what makes the docstring findable from the message, and
+        what makes the message's own advice -- rename one -- the wrong fix."""
+        from pcons.core.errors import PconsError
+
+        env = android_env()
+        app = _app(app_project, env)
+        self._both(app_project, env, app)
+
+        with pytest.raises(PconsError) as raised:
+            app_project.resolve()
+
+        assert "myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so" in str(raised.value)
+        assert "myapp-apk-lib-arm64-v8a" in str(raised.value)
