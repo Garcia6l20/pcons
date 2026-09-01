@@ -71,25 +71,18 @@ QT_HOST_TOOLS = ("rcc", "qmlimportscanner", "qmldom")
 
 
 def android_env(
-    arch: str = "arm64-v8a",
-    *,
-    sdk: str | None = ANDROID_SDK,
-    ndk: str = ANDROID_NDK,
-    name: str | None = None,
+    arch: str = "arm64-v8a", *, sdk: str | None = ANDROID_SDK
 ) -> Environment:
     """An Android cross environment, with no real NDK behind it.
 
     Built by hand rather than through ``find_c_toolchain``, so it runs
     everywhere: nothing here compiles anything.
-
-    *name* is what lets two of these hold targets of the same name, which
-    is how one application is built for several ABIs.
     """
     from pcons.core.environment import Environment as Env
     from pcons.toolchains.llvm import LlvmToolchain
     from pcons.toolchains.presets import android
 
-    env = Env(name=name)
+    env = Env()
     for name, cmd in (
         ("cc", "clang"),
         ("cxx", "clang++"),
@@ -100,23 +93,16 @@ def android_env(
         tool.set("cmd", cmd)
         tool.set("flags", [])
     env._toolchain = LlvmToolchain()
-    env.apply_cross_preset(android(ndk=ndk, arch=arch, api=35, sdk=sdk))
+    env.apply_cross_preset(android(ndk=ANDROID_NDK, arch=arch, api=35, sdk=sdk))
     return env
 
 
-def fake_qt_for_android(
-    root: Path,
-    tools: Sequence[str] = QT_HOST_TOOLS,
-    arch: str = "arm64-v8a",
-) -> QtPackage:
+def fake_qt_for_android(root: Path, tools: Sequence[str] = QT_HOST_TOOLS) -> QtPackage:
     """A Qt for Android whose tools sit in the host Qt beside it.
 
     That split is what ``qtpaths --query`` reports for a Qt for Android: the
     prefix is the Android install, QT_HOST_BINS and QT_HOST_LIBEXECS are the
     host one, and the Android install ships no runnable rcc at all.
-
-    One host Qt serves every *arch*, which is the real layout: the installer
-    puts android_arm64_v8a and android_x86_64 beside one gcc_64.
     """
     host = root / "Qt" / "6.11.1" / "gcc_64"
     (host / "bin").mkdir(parents=True, exist_ok=True)
@@ -124,7 +110,7 @@ def fake_qt_for_android(
     suffix = ".exe" if get_platform().is_windows else ""
     for tool in tools:
         (host / "libexec" / f"{tool}{suffix}").write_text("")
-    prefix = root / "Qt" / "6.11.1" / f"android_{arch.replace('-', '_')}"
+    prefix = root / "Qt" / "6.11.1" / "android_arm64_v8a"
     prefix.mkdir(parents=True, exist_ok=True)
     return QtPackage(
         version="6.11.1",

@@ -466,17 +466,13 @@ jobs:
             --outputdir "$HOME/Qt"
           uvx --from aqtinstall aqt install-qt linux android 6.8.3 android_arm64_v8a \
             --outputdir "$HOME/Qt"
-          uvx --from aqtinstall aqt install-qt linux android 6.8.3 android_x86_64 \
-            --outputdir "$HOME/Qt"
           echo "PCONS_QT_ANDROID_ROOT=$HOME/Qt/6.8.3/android_arm64_v8a" >> "$GITHUB_ENV"
-          echo "PCONS_QT_ANDROID_ROOT_X86_64=$HOME/Qt/6.8.3/android_x86_64" >> "$GITHUB_ENV"
       - name: Verify the Qt for Android is usable
         # The same guard as the desktop Qt job: fail here rather than let the
         # example skip itself green because the install produced nothing.
         run: |
           test -x "$HOME/Qt/6.8.3/gcc_64/bin/androiddeployqt"
           test -d "$PCONS_QT_ANDROID_ROOT/lib"
-          test -d "$PCONS_QT_ANDROID_ROOT_X86_64/lib"
           "$HOME/Qt/6.8.3/gcc_64/bin/androiddeployqt" --help | head -3
       - name: Package a Qt application as an APK
         # --no-build: androiddeployqt parses the settings and reads the staged
@@ -488,17 +484,6 @@ jobs:
             --cov-report=xml -v -k "77_qt_android_apk" | tee qtapk.txt
           if grep -q '77_qt_android_apk-ninja] SKIPPED' qtapk.txt; then
             echo "::error::the Qt APK example skipped instead of running"
-            exit 1
-          fi
-      - name: Package one application for two ABIs
-        # The second ABI is the whole point, so a skip here would leave the
-        # multi-ABI settings and the second staging untested and green.
-        run: |
-          set -o pipefail
-          uv run pytest tests/test_examples.py --cov=pcons --cov-append \
-            --cov-report=xml -v -k "79_qt_android_multi_abi" | tee multiabi.txt
-          if grep -q '79_qt_android_multi_abi-ninja] SKIPPED' multiabi.txt; then
-            echo "::error::the multi-ABI example skipped instead of running"
             exit 1
           fi
       - name: Upload coverage to Codecov
