@@ -752,3 +752,80 @@ class TestSeveralAbisInOnePackage:
             android_apk(
                 app_project, two_abis["arm64-v8a"], app="myapp", settings="s.json"
             )
+
+
+class TestTwoPackagesOverOneApplication:
+    """A debug package and a release package, which is the normal case once
+    signing exists. The staging path comes from the application and the ABI,
+    so one environment stages one application once and both packages read
+    the one staged library."""
+
+    def _both(self, project, env, app, staged=None):
+        settings = android_deployment_settings(project, env, app=app)
+        debug = android_apk(project, env, app=app, settings=settings, staged=staged)
+        release = android_apk(
+            project,
+            env,
+            app=app,
+            settings=settings,
+            staged=staged,
+            release=True,
+            name=f"{app.name}-apk-release",
+        )
+        return debug, release
+
+    def test_one_staging_call_feeds_both_packages(
+        self, app_project, deployable
+    ) -> None:
+        """Read out of the build graph: both edges name the staged library,
+        and one edge produces it."""
+        from ._qt_test_utils import generate_ninja
+
+        env = android_env()
+        app = _app(app_project, env)
+        staged = stage_application_library(app_project, env, app=app)
+
+        self._both(app_project, env, app, staged=staged)
+        content = generate_ninja(app_project)
+
+        library = "myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so"
+        assert library in _edge(content, DEBUG_APK)
+        assert library in _edge(content, UNSIGNED)
+        produce = [
+            line
+            for line in content.splitlines()
+            if line.startswith(f"build {library}:")
+        ]
+        assert len(produce) == 1
+
+    def test_letting_each_package_stage_for_itself_still_raises(
+        self, app_project, deployable
+    ) -> None:
+        """The docstring that tells a caller to share the call is only true
+        while this refusal exists, so it is pinned here."""
+        from pcons.core.errors import PconsError
+
+        env = android_env()
+        app = _app(app_project, env)
+
+        self._both(app_project, env, app)
+
+        with pytest.raises(PconsError, match="both build"):
+            app_project.resolve()
+
+    def test_the_error_names_the_path_androiddeployqt_reads(
+        self, app_project, deployable
+    ) -> None:
+        """Which is what makes the docstring findable from the message, and
+        what makes the message's own advice -- rename one -- the wrong fix."""
+        from pcons.core.errors import PconsError
+
+        env = android_env()
+        app = _app(app_project, env)
+        self._both(app_project, env, app)
+
+        with pytest.raises(PconsError) as raised:
+            app_project.resolve()
+
+        assert "myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so" in str(raised.value)
+        assert "myapp-apk-lib-arm64-v8a" in str(raised.value)

@@ -72,6 +72,29 @@ def stage_application_library(
     one ``libs/<abi>/`` out of it per ABI. The list of what they return
     goes to :func:`android_apk` as ``staged``.
 
+    **Two packages over one application share one call.** The staging path
+    is derived from the application and the ABI, so calling this twice for
+    one application in one environment -- which is what a debug package and
+    a release package do when each is left to stage for itself -- derives
+    the same path twice, and pcons refuses::
+
+        pcons.core.errors.PconsError: targets 'myapp-apk-lib-arm64-v8a' and
+        'myapp-apk-lib-arm64-v8a_1' both build
+        myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so.
+        Each output file must have one producer: give one target a distinct
+        output_name or output_prefix, or split into multiple projects.
+
+    The refusal is right and the advice in it is not the answer here: there
+    is nothing to rename, because androiddeployqt reads that one path. Call
+    this once and give the result to every package as ``staged=``::
+
+        staged = stage_application_library(project, env, app=app)
+        debug = android_apk(project, env, app=app, settings=settings,
+                            staged=staged)
+        unsigned = android_apk(project, env, app=app, settings=settings,
+                               staged=staged, release=True,
+                               name=f"{app.name}-apk-release")
+
     Args:
         project: The project.
         env: The environment the application is built in, retargeted with
@@ -165,7 +188,10 @@ def android_apk(
         staged: The staging target from :func:`stage_application_library`,
                 or one per ABI for a package over several. Made here when
                 left out, so a package cannot be built without the
-                application in it.
+                application in it -- which is why a second package over the
+                same application must be given the first one's, rather than
+                letting this stage the same library a second time. See
+                :func:`stage_application_library`.
         output: The androiddeployqt output directory. Default:
                 :func:`~pcons.toolchains.qt.android.android_output_dir`.
         release: Build the release package. It is unsigned, so it installs

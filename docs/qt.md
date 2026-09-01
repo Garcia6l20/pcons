@@ -464,6 +464,31 @@ directory the way Qt's CMake does. One environment then builds any number of
 applications instead of needing one environment each because of a packaging
 detail.
 
+**Two packages over one application share one staging call.** The path comes
+from the application and the ABI, so a debug package and a release package
+that each stage for themselves derive the same path, and pcons refuses two
+producers of one file:
+
+```
+pcons.core.errors.PconsError: targets 'myapp-apk-lib-arm64-v8a' and
+'myapp-apk-lib-arm64-v8a_1' both build
+myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so.
+Each output file must have one producer: give one target a distinct
+output_name or output_prefix, or split into multiple projects.
+```
+
+The refusal is right, and the advice in the message is not the answer here:
+there is nothing to rename, because androiddeployqt reads that one path.
+Stage once and pass the result to every package as `staged=`:
+
+```python
+staged = stage_application_library(project, env, app=app)
+debug = android_apk(project, env, app=app, settings=settings, staged=staged)
+unsigned = android_apk(project, env, app=app, settings=settings,
+                       staged=staged, release=True,
+                       name=f"{app.name}-apk-release")
+```
+
 #### Building the package
 
 ```python
