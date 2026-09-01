@@ -71,8 +71,8 @@ def stage_application_library(
     a release package do when each is left to stage for itself -- derives
     the same path twice, and pcons refuses::
 
-        pcons.core.errors.PconsError: targets 'myapp-apk-lib' and
-        'myapp-apk-lib_1' both build
+        pcons.core.errors.PconsError: targets 'myapp-apk-lib-arm64-v8a' and
+        'myapp-apk-lib-arm64-v8a_1' both build
         myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so.
         Each output file must have one producer: give one target a distinct
         output_name or output_prefix, or split into multiple projects.
@@ -97,7 +97,10 @@ def stage_application_library(
                 :func:`~pcons.toolchains.qt.android.android_output_dir`.
 
     Returns:
-        The staging target, one copy, named ``<app>-apk-lib``.
+        The staging target, one copy, named ``<app>-apk-lib-<abi>``.
+        The ABI is in the name because two packages built for different
+        ABIs are two targets, and install targets share one namespace
+        across environments.
 
     Raises:
         ValueError: If the environment is not an Android cross environment.
@@ -105,7 +108,9 @@ def stage_application_library(
     abi = _android_preset(env).arch
     directory = Path(output) if output is not None else android_output_dir(env, app)
     staged = directory / "libs" / abi / application_library_name(app, abi)
-    return project.InstallAs(staged, app, name=f"{app.name}-apk-lib", no_prefix=True)
+    return project.InstallAs(
+        staged, app, name=f"{app.name}-apk-lib-{abi}", no_prefix=True
+    )
 
 
 def apk_path(

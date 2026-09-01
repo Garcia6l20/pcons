@@ -156,7 +156,7 @@ class TestItIsARealBuildEdge:
 
         staged = stage_application_library(app_project, env, app=_app(app_project, env))
 
-        assert staged.name == "myapp-apk-lib"
+        assert staged.name == "myapp-apk-lib-arm64-v8a"
 
 
 class TestWhatItRefuses:
@@ -274,7 +274,31 @@ class TestStaging:
         env = android_env()
         _apk(app_project, env, _app(app_project, env))
 
-        assert app_project.get_target("myapp-apk-lib", False) is not None
+        assert app_project.get_target("myapp-apk-lib-arm64-v8a", False) is not None
+
+    def test_two_abis_do_not_collide_on_the_default_name(
+        self, app_project, deployable, caplog
+    ) -> None:
+        """Two packages for two ABIs are two targets, and install targets
+        share one namespace across environments. Without the ABI in the
+        default name the second is silently renamed and the caller is left
+        with a target it did not ask for."""
+        import logging
+
+        arm = android_env("arm64-v8a")
+        x86 = android_env("x86_64")
+
+        with caplog.at_level(logging.WARNING):
+            stage_application_library(
+                app_project, arm, app=_app(app_project, arm, name="myapp")
+            )
+            stage_application_library(
+                app_project, x86, app=_app(app_project, x86, name="myapp2")
+            )
+
+        assert "renamed" not in caplog.text
+        assert app_project.get_target("myapp-apk-lib-arm64-v8a", False) is not None
+        assert app_project.get_target("myapp2-apk-lib-x86_64", False) is not None
 
     def test_one_made_by_hand_is_used_as_it_is(self, app_project, deployable) -> None:
         env = android_env()
@@ -283,7 +307,7 @@ class TestStaging:
 
         _apk(app_project, env, app, staged=staged)
 
-        assert app_project.get_target("myapp-apk-lib_1", False) is None
+        assert app_project.get_target("myapp-apk-lib-arm64-v8a_1", False) is None
 
 
 class TestNoBuild:
@@ -720,4 +744,4 @@ class TestTwoPackagesOverOneApplication:
             app_project.resolve()
 
         assert "myapp/libs/arm64-v8a/libmyapp_arm64-v8a.so" in str(raised.value)
-        assert "myapp-apk-lib" in str(raised.value)
+        assert "myapp-apk-lib-arm64-v8a" in str(raised.value)
