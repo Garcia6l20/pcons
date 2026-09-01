@@ -1402,6 +1402,93 @@ class TestLinkInputOrder:
         self._assert_links_in_order(exe, lib_a, lib_b)
 
 
+class TestLateNodeTargetDeps:
+    """depends() edges must survive targets whose nodes are created in the
+    pending-sources phase rather than during resolution (#129)."""
+
+    @staticmethod
+    def _source_tree(tmp_path: Path) -> Path:
+        tree = tmp_path / "tree"
+        (tree / "sub").mkdir(parents=True)
+        (tree / "sub" / "f.txt").write_text("x")
+        return tree
+
+    def test_command_depends_on_install_dir(self, tmp_path):
+        project = Project("bug", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        staged = project.InstallDir("stage", self._source_tree(tmp_path))
+        cmd = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="after",
+        )
+        cmd.depends(staged)
+
+        project.resolve()
+
+        assert staged.output_nodes, "install target produced no nodes"
+        implicit = {n.path for n in cmd.output_nodes[0].implicit_deps}
+        assert {n.path for n in staged.output_nodes} <= implicit
+
+    def test_reapplied_edges_are_not_duplicated(self, tmp_path):
+        """The edges are applied once when the target resolves and again after
+        pending sources, so the second pass must add nothing it already has."""
+        project = Project("bug", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        gen = env.Command(
+            target=project.build_dir / "gen.txt",
+            command="echo gen > $TARGET",
+            name="gen",
+        )
+        cmd = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="after",
+        )
+        cmd.depends(gen, project.InstallDir("stage", self._source_tree(tmp_path)))
+
+        project.resolve()
+
+        for node in cmd.intermediate_nodes + cmd.output_nodes:
+            paths = [d.path for d in node.implicit_deps]
+            assert len(paths) == len(set(paths))
+
+    def test_install_dir_depends_on_command(self, tmp_path):
+        project = Project("bug", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        gen = env.Command(
+            target=project.build_dir / "gen.txt",
+            command="echo gen > $TARGET",
+            name="gen",
+        )
+        staged = project.InstallDir("stage", self._source_tree(tmp_path))
+        staged.depends(gen)
+
+        project.resolve()
+
+        assert staged.output_nodes, "install target produced no nodes"
+        for node in staged.output_nodes:
+            assert gen.output_nodes[0] in node.implicit_deps
+
+    def test_install_dir_file_dep_reaches_its_nodes(self, tmp_path):
+        project = Project("bug", root_dir=tmp_path, build_dir=tmp_path / "build")
+
+        stamp_input = tmp_path / "version.txt"
+        stamp_input.write_text("1")
+
+        staged = project.InstallDir("stage", self._source_tree(tmp_path))
+        staged.depends(stamp_input)
+
+        project.resolve()
+
+        assert staged.output_nodes, "install target produced no nodes"
+        for node in staged.output_nodes:
+            assert any(d.path.name == stamp_input.name for d in node.implicit_deps)
+
+
 class TestOutputOnlyFileDeps:
     """depends(path, propagate=False) records a file dep in a second list that
     the resolver's guard did not test, so it never reached any node."""
