@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pcons.core.project import Project
@@ -62,7 +64,7 @@ class TestQmlSingletons:
     def test_the_pragma_is_found(self, qml_project, tmp_path, body):
         qmldir = self._qmldir(qml_project, tmp_path, body)
 
-        assert "singleton Theme 1.0 Theme.qml" in qmldir
+        assert "singleton Theme 1.0 qml/Theme.qml" in qmldir
 
     @pytest.mark.parametrize(
         "body",
@@ -75,7 +77,7 @@ class TestQmlSingletons:
     def test_a_plain_file_stays_a_type(self, qml_project, tmp_path, body):
         qmldir = self._qmldir(qml_project, tmp_path, body)
 
-        assert "Theme 1.0 Theme.qml" in qmldir
+        assert "Theme 1.0 qml/Theme.qml" in qmldir
         assert "singleton" not in qmldir
 
     @pytest.mark.parametrize(
@@ -101,7 +103,7 @@ class TestQmlSingletons:
         generate_ninja(qml_project)
 
         qmldir = (tmp_path / "build" / "qt.ui" / "qmldir").read_text()
-        assert "Generated 1.0 Generated.qml" in qmldir
+        assert "Generated 1.0 qml/Generated.qml" in qmldir
         assert "singleton" not in qmldir
 
     def test_the_qml_files_are_configure_dependencies(self, qml_project, tmp_path):
@@ -174,12 +176,12 @@ class TestQtQmlModule:
         assert "module com.example.demo" in qmldir
         assert "typeinfo ui.qmltypes" in qmldir
         assert "prefer :/qt/qml/com/example/demo/" in qmldir
-        assert "Main 2.1 Main.qml" in qmldir
+        assert "Main 2.1 qml/Main.qml" in qmldir
 
         # The synthesized qrc embeds under the engine's default import path.
         qrc = (tmp_path / "build" / "qt.ui" / "ui.qrc").read_text()
         assert '<qresource prefix="/qt/qml/com/example/demo">' in qrc
-        assert 'alias="Main.qml"' in qrc
+        assert 'alias="qml/Main.qml"' in qrc
         assert 'alias="qmldir"' in qrc
 
     def test_pure_qml_module_skips_registrar(self, qml_project, tmp_path):
@@ -193,7 +195,7 @@ class TestQtQmlModule:
         qmldir = (tmp_path / "build" / "qt.puremod" / "qmldir").read_text()
         assert "module Pure.Ui" in qmldir
         assert "typeinfo" not in qmldir
-        assert "Main 1.0 Main.qml" in qmldir
+        assert "Main 1.0 qml/Main.qml" in qmldir
 
     def test_object_target_kind(self, qml_project):
         # Object target: registration + resources can't be dead-stripped
@@ -295,3 +297,154 @@ class TestQmlSourceDirs:
         add_subdirectory("child", env=env, vars={"ROOT": str(tmp_path)})
 
         assert qml_source_dirs(qml_project) == [child_qml]
+
+
+class TestQmlFilesKeepTheirPath:
+    """An entry is also its path inside the module resource.
+
+    Every expected string here was read out of what Qt 6.11.1's
+    ``qt_add_qml_module`` generated for the same file list: the qmldir under
+    ``<build>/My/Module/qmldir`` and the qrc under ``<build>/.qt/rcc/``.
+    """
+
+    def _generate(self, project, tmp_path, files, uri="My.Module"):
+        for name in files:
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("import QtQuick\nItem {}\n")
+        env = cxx_env_with_qt(project)
+        project.QtQmlModule("ui", env, uri=uri, qml_files=list(files))
+        generate_ninja(project)
+        module_dir = tmp_path / "build" / "qt.ui"
+        return (
+            (module_dir / "qmldir").read_text(),
+            (module_dir / "ui.qrc").read_text(),
+        )
+
+    def test_the_qmldir_names_the_nested_path(self, qml_project, tmp_path):
+        qmldir, _ = self._generate(
+            qml_project,
+            tmp_path,
+            ["Main.qml", "sub/Thing.qml", "deep/nested/Page.qml"],
+        )
+
+        lines = qmldir.splitlines()
+        assert "Main 1.0 Main.qml" in lines
+        assert "Thing 1.0 sub/Thing.qml" in lines
+        assert "Page 1.0 deep/nested/Page.qml" in lines
+
+    def test_the_qrc_alias_is_the_nested_path(self, qml_project, tmp_path):
+        _, qrc = self._generate(
+            qml_project,
+            tmp_path,
+            ["Main.qml", "sub/Thing.qml", "deep/nested/Page.qml"],
+        )
+
+        assert '<qresource prefix="/qt/qml/My/Module">' in qrc
+        assert 'alias="Main.qml"' in qrc
+        assert 'alias="sub/Thing.qml"' in qrc
+        assert 'alias="deep/nested/Page.qml"' in qrc
+
+    def test_a_file_above_the_root_keeps_its_dot_dots(self, qml_project, tmp_path):
+        """qt_add_qml_module writes ``../outside/Outside.qml`` verbatim into
+        both files, so pcons does too rather than inventing a rule."""
+        (tmp_path / "outside").mkdir()
+        (tmp_path / "outside" / "Outside.qml").write_text("import QtQuick\nItem {}\n")
+        env = cxx_env_with_qt(qml_project)
+        qml_project.QtQmlModule(
+            "ui",
+            env,
+            uri="My.Module",
+            qml_files=["qml/Main.qml", "../outside/Outside.qml"],
+        )
+        generate_ninja(qml_project)
+
+        module_dir = tmp_path / "build" / "qt.ui"
+        assert (
+            "Outside 1.0 ../outside/Outside.qml"
+            in (module_dir / "qmldir").read_text().splitlines()
+        )
+        assert 'alias="../outside/Outside.qml"' in (module_dir / "ui.qrc").read_text()
+
+    def test_a_path_object_entry_becomes_a_slashed_resource_path(
+        self, qml_project, tmp_path
+    ):
+        """qml_files takes str or Path; a resource path is always slashed."""
+        env = cxx_env_with_qt(qml_project)
+        qml_project.QtQmlModule(
+            "ui", env, uri="My.Module", qml_files=[Path("qml") / "Main.qml"]
+        )
+        generate_ninja(qml_project)
+
+        module_dir = tmp_path / "build" / "qt.ui"
+        assert "Main 1.0 qml/Main.qml" in (module_dir / "qmldir").read_text()
+        assert 'alias="qml/Main.qml"' in (module_dir / "ui.qrc").read_text()
+
+    def test_an_absolute_entry_is_refused(self, qml_project, tmp_path):
+        """qt_add_qml_module errors on an absolute QML_FILES entry: there is no
+        resource path to give it. Measured against Qt 6.11.1."""
+        env = cxx_env_with_qt(qml_project)
+
+        with pytest.raises(ValueError) as excinfo:
+            qml_project.QtQmlModule(
+                "ui",
+                env,
+                uri="My.Module",
+                qml_files=[str(tmp_path / "qml" / "Main.qml")],
+            )
+
+        assert "absolute" in str(excinfo.value)
+
+
+class TestQmlFileCollisions:
+    """Two entries that land on one resource path must not be silent.
+
+    Measured against Qt 6.11.1: with ``sub/Thing.qml`` and ``other/Thing.qml``
+    in one module, ``qt_add_qml_module`` writes two ``Thing 1.0`` qmldir lines
+    and the engine resolves ``Thing`` to the last one. The first file is in the
+    resource and unreachable by name, with no warning from any tool.
+    """
+
+    def _module(self, project, tmp_path, files):
+        for name in files:
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("import QtQml\nQtObject {}\n")
+        env = cxx_env_with_qt(project)
+        return lambda: project.QtQmlModule(
+            "ui", env, uri="com.example.demo", qml_files=list(files)
+        )
+
+    def test_two_files_sharing_a_type_name_raise(self, qml_project, tmp_path):
+        build = self._module(
+            qml_project, tmp_path, ["sub/Thing.qml", "other/Thing.qml"]
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            build()
+
+        message = str(excinfo.value)
+        assert "sub/Thing.qml" in message
+        assert "other/Thing.qml" in message
+        assert "Thing" in message
+
+    def test_the_same_entry_twice_raises(self, qml_project, tmp_path):
+        build = self._module(qml_project, tmp_path, ["qml/Main.qml", "qml/Main.qml"])
+
+        with pytest.raises(ValueError) as excinfo:
+            build()
+
+        assert "qml/Main.qml" in str(excinfo.value)
+        assert "twice" in str(excinfo.value)
+
+    def test_the_same_name_in_one_directory_is_not_a_collision(
+        self, qml_project, tmp_path
+    ):
+        build = self._module(qml_project, tmp_path, ["sub/Thing.qml", "sub/Other.qml"])
+
+        build()
+        generate_ninja(qml_project)
+
+        qmldir = (tmp_path / "build" / "qt.ui" / "qmldir").read_text().splitlines()
+        assert "Thing 1.0 sub/Thing.qml" in qmldir
+        assert "Other 1.0 sub/Other.qml" in qmldir
