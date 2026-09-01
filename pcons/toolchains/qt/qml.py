@@ -94,6 +94,57 @@ def qml_source_dirs(project: Project, env: Environment | None = None) -> list[Pa
     return dirs
 
 
+def _qml_entries(name: str, qml_files: Sequence[str | Path]) -> list[tuple[str, Path]]:
+    """Each ``qml_files`` entry as (resource path, path under the root).
+
+    The resource path is the entry itself, which is what ``qt_add_qml_module``
+    writes into both the qmldir line and the qrc alias: ``sub/Thing.qml`` is
+    reachable at ``qrc:/qt/qml/<uri>/sub/Thing.qml``.
+
+    Args:
+        name: The module target name, for the error messages.
+        qml_files: The entries as the caller spelled them.
+
+    Returns:
+        One pair per entry, in declaration order.
+
+    Raises:
+        ValueError: An entry is absolute, listed twice, or shares its QML type
+            name with another entry.
+    """
+    entries: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    declared_by: dict[str, str] = {}
+    for qml in qml_files:
+        path = Path(qml)
+        if path.is_absolute():
+            raise ValueError(
+                f"QtQmlModule '{name}': qml_files entry '{path}' is absolute. "
+                "An entry is also the file's path inside the module resource, "
+                "so spell it relative to the project root. qt_add_qml_module "
+                "refuses an absolute QML_FILES entry for the same reason."
+            )
+        resource_path = path.as_posix()
+        if resource_path in seen:
+            raise ValueError(
+                f"QtQmlModule '{name}': qml_files lists '{resource_path}' "
+                "twice, and one entry would overwrite the other in the "
+                "resource."
+            )
+        clash = declared_by.get(path.stem)
+        if clash is not None:
+            raise ValueError(
+                f"QtQmlModule '{name}': '{clash}' and '{resource_path}' both "
+                f"declare the QML type '{path.stem}'. The engine resolves the "
+                "name to one of them and the other is unreachable. Rename one "
+                "file, or split them into two modules."
+            )
+        seen.add(resource_path)
+        declared_by[path.stem] = resource_path
+        entries.append((resource_path, path))
+    return entries
+
+
 def _set_node_vars(node: Node, node_vars: dict[str, object]) -> None:
     """Attach per-node command variables (the swift.py precedent)."""
     info = getattr(node, "_build_info", None)
@@ -214,7 +265,10 @@ class QtQmlModuleBuilder:
             uri: Module URI, e.g. "com.example.app". QML imports it and
                 the resources live under :/qt/qml/<uri-as-path>/.
             version: Module version "major.minor".
-            qml_files: QML files to embed (type name = file stem).
+            qml_files: QML files to embed, relative to the project root.
+                Each entry is also the file's path inside the module
+                resource, and its stem is the QML type name. Two
+                entries sharing a stem are an error.
             sources: C++ sources; QML_ELEMENT classes register
                 automatically (via the same automoc scan as QtProgram).
             link: Targets to link — pass Qt modules (link=[qt.Quick]).
@@ -224,6 +278,7 @@ class QtQmlModuleBuilder:
             An object target; app.link(module) pulls everything in.
         """
         _require_qt_tool(env, "QtQmlModule()")
+        qml_entries = _qml_entries(name, qml_files)
         defined_at = defined_at or get_caller_location()
         major, minor = _parse_version(version)
         uri_path = uri.replace(".", "/")
@@ -299,19 +354,18 @@ class QtQmlModuleBuilder:
         if registrar_node is not None:
             qmldir_lines.append(f"typeinfo {qmltypes_name}")
         qmldir_lines.append(f"prefer :/qt/qml/{uri_path}/")
-        for qml in qml_files:
-            qml_path = Path(qml)
+        for resource_path, qml_path in qml_entries:
             # The qmldir is written now, from the file's own content, so a
             # pragma added later has to re-run pcons and not only rcc.
             project.add_configure_dependency(root / qml_path)
             kind = "singleton " if _declares_singleton(root / qml_path) else ""
             qmldir_lines.append(
-                f"{kind}{qml_path.stem} {major}.{minor} {qml_path.name}"
+                f"{kind}{qml_path.stem} {major}.{minor} {resource_path}"
             )
         _write_if_changed(root / qt_dir / "qmldir", "\n".join(qmldir_lines) + "\n")
 
         # ---- resources under :/qt/qml/<uri>/ ---------------------------
-        entries = [(Path(qml).name, root / qml) for qml in qml_files]
+        entries = [(alias, root / qml) for alias, qml in qml_entries]
         entries.append(("qmldir", root / qt_dir / "qmldir"))
         if registrar_node is not None:
             entries.append((qmltypes_name, root / qt_dir / qmltypes_name))
