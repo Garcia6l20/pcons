@@ -490,6 +490,21 @@ class QtToolchain(BaseToolchain):
         self._tools = {"qt": qt}
         return True
 
+    def after_resolve(
+        self,
+        project: Any,
+        source_obj_by_language: dict[str, list[Any]],
+    ) -> None:
+        """Report a header two linked-together Qt targets both moc.
+
+        Run here because the answer needs the link edges, which a target
+        gains after it is created: ``app.link(module)`` is the usual
+        spelling and the scan is long over by then.
+        """
+        from pcons.toolchains.qt.builders import report_duplicate_moc
+
+        report_duplicate_moc(project)
+
     @classmethod
     def from_package(cls, qt: QtPackage) -> QtToolchain:
         """A toolchain preconfigured from a located Qt installation."""

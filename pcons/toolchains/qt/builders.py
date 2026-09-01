@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -61,6 +62,117 @@ if TYPE_CHECKING:
     from pcons.util.source_location import SourceLocation
 
 _CPP_SUFFIXES = MOC_SOURCE_SUFFIXES + (".c", ".m", ".mm")
+
+#: Every Qt target of a project tree, with the headers its scan moc'ed and
+#: the include chain each one was reached through. Two targets that moc one
+#: header and then link together compile its meta-object code twice, which
+#: the linker reports as duplicate symbols in generated files nobody wrote.
+#: Keyed by the top-level project, like ``_qml_module_sources``.
+_moc_ownership: weakref.WeakKeyDictionary[
+    Project, list[tuple[Target, dict[Path, tuple[Path, ...]]]]
+] = weakref.WeakKeyDictionary()
+
+
+def _include_chain(header: Path, reached_from: dict[Path, Path]) -> tuple[Path, ...]:
+    """The files that led the walk to *header*, source first."""
+    chain = [header]
+    seen = {header}
+    parent = reached_from.get(header)
+    while parent is not None and parent not in seen:
+        seen.add(parent)
+        chain.append(parent)
+        parent = reached_from.get(parent)
+    return tuple(reversed(chain))
+
+
+def _link_closure(target: Target) -> list[Target]:
+    """*target* and every target reachable from it through link_libs.
+
+    ``transitive_dependencies()`` also follows ``depends()`` edges, which
+    order a build without linking anything, so the walk is done here over
+    the link edges alone.
+    """
+    from pcons.core.target import Target as TargetClass
+
+    found: dict[int, Target] = {}
+    stack = [target]
+    while stack:
+        current = stack.pop()
+        if id(current) in found:
+            continue
+        found[id(current)] = current
+        stack.extend(
+            lib
+            for lib in (*current.public.link_libs, *current.private.link_libs)
+            if isinstance(lib, TargetClass)
+        )
+    return list(found.values())
+
+
+def report_duplicate_moc(project: Project) -> None:
+    """Warn when two targets that link together both moc one header.
+
+    The class's meta-object code is then compiled into both, and the link
+    fails on ``staticMetaObject`` and ``qt_static_metacall`` in files the
+    author never wrote. The include chain that reached the header is the
+    part that cannot be recovered from that error, so it is printed.
+
+    A header moc'ed by two targets that never meet at a link is two
+    separate programs sharing a source file, which is correct, so the
+    report is made per link closure rather than per project.
+    """
+    owners = _moc_ownership.get(project.top)
+    if not owners:
+        return
+    by_id = {id(target): headers for target, headers in owners}
+    reported: set[tuple[str, ...]] = set()
+    for root in project.top.targets:
+        closure = [t for t in _link_closure(root) if id(t) in by_id]
+        if len(closure) < 2:
+            continue
+        headers: dict[Path, list[Target]] = {}
+        for target in closure:
+            for header in by_id[id(target)]:
+                headers.setdefault(header, []).append(target)
+        for header, sharers in sorted(headers.items()):
+            if len(sharers) < 2:
+                continue
+            sharers = sorted(sharers, key=lambda t: t.name)
+            key = (str(header), *(t.name for t in sharers))
+            if key in reported:
+                continue
+            reported.add(key)
+            chains = "\n".join(
+                "  '{}' reaches it through {}".format(
+                    target.name,
+                    " -> ".join(
+                        _display_path(project, p) for p in by_id[id(target)][header]
+                    ),
+                )
+                for target in sharers
+            )
+            logger.warning(
+                "Qt targets %s %s run moc on %s and link together, so its "
+                "meta-object code is compiled once per target and the link "
+                "fails on duplicate 'staticMetaObject' / 'qt_static_metacall' "
+                "symbols.\n%s\nOne target has to own the class. no_moc "
+                "excludes a file from moc generation only: the scan still "
+                "opens it and still follows its includes, so excluding a "
+                "header moves the duplicate one include deeper instead of "
+                "removing it.",
+                " and ".join(f"'{t.name}'" for t in sharers),
+                "both" if len(sharers) == 2 else "all",
+                _display_path(project, header),
+                chains,
+            )
+
+
+def _display_path(project: Project, path: Path) -> str:
+    """*path* relative to the project root when it lives there."""
+    try:
+        return str(path.relative_to(project.top.root_dir))
+    except ValueError:
+        return str(path)
 
 
 def _require_qt_tool(env: Environment, what: str) -> None:
@@ -337,6 +449,7 @@ def _qt_make_target(
     moc_header_dirs: list[Path] = []
     dot_moc_nodes: list[Node] = []
     scan_stamp: Node | None = None
+    moc_ownership: dict[Path, tuple[Path, ...]] = {}
     if automoc and cpp_paths:
         scan_dirs = _scan_include_dirs(project, env, link)
         scanner = QtScanner(project.root_dir, cache_dir=project.root_dir / build_dir)
@@ -359,6 +472,7 @@ def _qt_make_target(
             )
 
         for header in scan.moc_headers:
+            moc_ownership[header] = _include_chain(header, scan.reached_from)
             rel = _source_rel_dir(qt_env, project.node(header))
             target_path = qt_dir.joinpath(*rel) / f"moc_{header.stem}.cpp"
             moc_nodes.append(qt_env.qt.Moc(target_path, str(header))[0])
@@ -418,6 +532,9 @@ def _qt_make_target(
     for node in (*ui_nodes, *dot_moc_nodes, *moc_deps):
         target.depends(node)
 
+    if moc_ownership:
+        _moc_ownership.setdefault(project.top, []).append((target, moc_ownership))
+
     info = _QtGenInfo(
         qt_env=qt_env,
         qt_dir=qt_dir,
@@ -462,7 +579,12 @@ class QtProgramBuilder:
             link: Targets to link — pass the Qt modules here
                 (link=[qt.Widgets]) so moc sees their headers/defines.
             automoc/autouic/autorcc: Disable individual generators.
-            no_moc: Files to exclude from the moc scan.
+            no_moc: Files that must not get a moc edge. This excludes moc
+                *generation* for the file itself, nothing else: the scan
+                still opens it and still follows its includes, so a
+                Q_OBJECT header behind an excluded one is still moc'ed.
+                Only a directory the target's includes never reach keeps
+                the walk out.
         """
         target, _ = _qt_make_target(
             "Program",
