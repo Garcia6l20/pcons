@@ -1515,6 +1515,42 @@ class TestOutputOnlyFileDeps:
         )
 
 
+class TestLateNodeInterfaceForwarding:
+    """A target whose sources are still pending has no nodes yet, which is not
+    the same as an interface target that will never have any. Its deps belong
+    on itself once they arrive, not forwarded onto a consumer."""
+
+    def test_pending_dependency_deps_are_not_forwarded(self, tmp_path):
+        project = Project("fwd", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        tree = tmp_path / "tree"
+        (tree / "sub").mkdir(parents=True)
+        (tree / "sub" / "f.txt").write_text("x")
+
+        gen = env.Command(
+            target=project.build_dir / "gen.txt",
+            command="echo gen > $TARGET",
+            name="gen",
+        )
+        staged = project.InstallDir("stage", tree)
+        staged.depends(gen)
+
+        consumer = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="consumer",
+        )
+        consumer.add_dependency(staged)
+
+        project.resolve()
+
+        for node in staged.output_nodes:
+            assert gen.output_nodes[0] in node.implicit_deps
+        for node in consumer.intermediate_nodes + consumer.output_nodes:
+            assert gen.output_nodes[0] not in node.implicit_deps
+
+
 class TestUnappliableDepWarning:
     """A depends() edge that reached no node is reported at configure time."""
 
@@ -1562,6 +1598,26 @@ class TestUnappliableDepWarning:
         with caplog.at_level(logging.WARNING):
             project.resolve()
 
+        assert "could not be attached" not in caplog.text
+
+    def test_quiet_for_a_dep_that_builds_nothing(self, tmp_path, caplog):
+        """The dependency is an interface target with no outputs of its own,
+        so there is nothing to attach and nothing was dropped."""
+        project = Project("warn", root_dir=tmp_path, build_dir=tmp_path / "build")
+        env = project.Environment()
+
+        header_lib = project.HeaderOnlyLibrary("headers")
+        cmd = env.Command(
+            target=project.build_dir / "out.txt",
+            command="echo done > $TARGET",
+            name="after",
+        )
+        cmd.depends(header_lib)
+
+        with caplog.at_level(logging.WARNING):
+            project.resolve()
+
+        assert header_lib.output_nodes == []
         assert "could not be attached" not in caplog.text
 
     def test_quiet_for_a_forwarded_interface_dep(self, tmp_path, caplog, gcc_toolchain):
