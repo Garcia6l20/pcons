@@ -314,49 +314,95 @@ class Resolver:
                     [str(n.path) for n in target.output_nodes],
                 )
 
-            # Apply any extra implicit deps added via target.depends()
-            if target._extra_implicit_deps:
-                target._apply_extra_implicit_deps()
-
-            # Apply implicit target dependencies from target.depends(other_target).
-            # Propagated deps: outputs become implicit deps on all build nodes
-            # (intermediate + output). Output-only deps: only on output nodes.
-            self._apply_implicit_target_deps(
-                target._implicit_target_deps,
-                target.intermediate_nodes + target.output_nodes,
-            )
-            self._apply_implicit_target_deps(
-                target._implicit_target_deps_output_only, target.output_nodes
-            )
-
-            # An interface target (e.g. HeaderOnlyLibrary) builds nothing of its
-            # own, so a depends() call on it above has no node to attach the
-            # dependency to and would otherwise be silently dropped (#111). Its
-            # ordering can only hold in whoever consumes it, so forward any
-            # interface dependency's own unappliable implicit deps onto this
-            # target's nodes instead - the same rule depends() documents, just
-            # applied where it can actually take effect.
-            for iface_dep in target.transitive_dependencies():
-                if not iface_dep._resolved:
-                    self._resolve_target(iface_dep)
-                if iface_dep.intermediate_nodes or iface_dep.output_nodes:
-                    continue  # has its own nodes; its deps already applied to itself
-                if (
-                    iface_dep._extra_implicit_deps
-                    or iface_dep._extra_implicit_deps_output_only
-                ):
-                    iface_dep._apply_extra_implicit_deps(dest=target)
-                self._apply_implicit_target_deps(
-                    iface_dep._implicit_target_deps,
-                    target.intermediate_nodes + target.output_nodes,
-                )
-                self._apply_implicit_target_deps(
-                    iface_dep._implicit_target_deps_output_only, target.output_nodes
-                )
+            self._apply_target_dep_edges(target)
         finally:
             self._resolving.pop()
 
         target._resolved = True
+
+    def _apply_target_dep_edges(self, target: Target) -> None:
+        """Turn every dependency ``target`` declared with ``depends()`` into
+        implicit deps on its nodes.
+
+        Propagated deps land on all build nodes (intermediate + output),
+        output-only deps only on the output nodes.
+
+        Called once when the target resolves and again after pending sources
+        are resolved, because a builder may create its nodes in that later
+        phase (install and friends do) and the first call then had nothing to
+        attach to (#129). Both helpers skip deps already present, so the
+        second call adds only what the first could not.
+
+        An interface target (e.g. HeaderOnlyLibrary) builds nothing at all, so
+        a depends() call on it has no node of its own to attach to and would
+        otherwise be silently dropped (#111). Its ordering can only hold in
+        whoever consumes it, so its unappliable deps are forwarded onto this
+        target's nodes instead. A target whose sources are still pending is
+        not interface-only, it is one whose nodes have not arrived yet, and
+        forwarding its deps would put them on the wrong nodes.
+        """
+        if target._extra_implicit_deps or target._extra_implicit_deps_output_only:
+            target._apply_extra_implicit_deps()
+
+        self._apply_implicit_target_deps(
+            target._implicit_target_deps,
+            target.intermediate_nodes + target.output_nodes,
+        )
+        self._apply_implicit_target_deps(
+            target._implicit_target_deps_output_only, target.output_nodes
+        )
+
+        for iface_dep in target.transitive_dependencies():
+            if not iface_dep._resolved:
+                self._resolve_target(iface_dep)
+            if iface_dep.intermediate_nodes or iface_dep.output_nodes:
+                continue
+            if iface_dep._pending_sources is not None:
+                continue
+            if (
+                iface_dep._extra_implicit_deps
+                or iface_dep._extra_implicit_deps_output_only
+            ):
+                iface_dep._apply_extra_implicit_deps(dest=target)
+            self._apply_implicit_target_deps(
+                iface_dep._implicit_target_deps,
+                target.intermediate_nodes + target.output_nodes,
+            )
+            self._apply_implicit_target_deps(
+                iface_dep._implicit_target_deps_output_only, target.output_nodes
+            )
+
+    def report_unappliable_target_deps(self) -> None:
+        """Warn about a depends() edge that reached no node.
+
+        The ordering silently does not hold in that case, and the build fails
+        later, if at all, so the configure run is the only place to say it.
+
+        Two shapes are not failures: a target that builds nothing of its own,
+        whose ordering is forwarded to its consumers instead, and a dependency
+        that builds nothing, which is the same case seen from the other side.
+        """
+        for target in self.project.targets:
+            nodes = target.intermediate_nodes + target.output_nodes
+            if not nodes:
+                continue
+            landed = {id(dep) for node in nodes for dep in node.implicit_deps}
+            deps = (
+                target._implicit_target_deps + target._implicit_target_deps_output_only
+            )
+            for dep in deps:
+                if not dep.output_nodes:
+                    continue
+                if any(id(node) in landed for node in dep.output_nodes):
+                    continue
+                logger.warning(
+                    "Target '%s' depends on '%s', but none of that target's "
+                    "outputs could be attached as an implicit dependency, so "
+                    "the build order is not enforced. Defined at %s.",
+                    target.name,
+                    dep.name,
+                    target.defined_at,
+                )
 
     def _apply_implicit_target_deps(
         self, dep_targets: list[Target], dest_nodes: list[FileNode]
@@ -375,12 +421,17 @@ class Resolver:
     def resolve_pending_sources(self) -> None:
         """Resolve _pending_sources for all targets that have them.
 
-        Must run after main resolution so output_nodes are populated;
-        afterwards expands command templates for any new nodes.
+        Must run after main resolution so output_nodes are populated; then
+        re-applies every target's depends() edges, since a target resolved
+        here has nodes its own edges could not reach earlier, and expands
+        command templates for any new nodes.
         """
         for target in self._targets_in_build_order():
             if target._pending_sources is not None:
                 self._resolve_target_pending_sources(target)
+
+        for target in self._targets_in_build_order():
+            self._apply_target_dep_edges(target)
 
         # Expand command templates for any new nodes created during pending resolution
         self._expand_node_commands()
