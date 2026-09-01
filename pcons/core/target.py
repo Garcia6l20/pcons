@@ -794,6 +794,10 @@ class Target:
             propagate: If True (default), apply to all build steps
                       (intermediate + output). If False, only output.
 
+        The ordering is applied again once every target is resolved, so a
+        dependency whose own outputs only appear then, as an install target's
+        do, is still waited for.
+
         Returns:
             self for method chaining.
 
