@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""A QML module whose files sit in subdirectories.
+"""QML modules whose files sit in subdirectories.
 
 Each qml_files entry is also the file's path inside the module resource,
 the way qt_add_qml_module does it: "qml/pages/Detail.qml" is reachable at
 qrc:/qt/qml/PconsNested/qml/pages/Detail.qml, and the qmldir names that
 same path. Two files with one base name in different directories are a
 hard error rather than one silently replacing the other.
+
+The entries are relative to the declaring script's own directory, so the
+second module in chips/ spells "qml/Chip.qml" and gets
+qrc:/qt/qml/PconsNested/Chips/qml/Chip.qml. Where the build script sits
+in the source tree is not part of the resource layout.
 """
 
-from pcons import Project, find_c_toolchain
+from pcons import Project, add_subdirectory, find_c_toolchain
 from pcons.toolchains.qt import find_qt
 
 project = Project("qml_nested")
@@ -29,5 +34,8 @@ ui = project.QtQmlModule(
     link=[qt.Qml],
 )
 
+chips = add_subdirectory("chips", env=env)
+
 app = project.QtProgram("qml_nested", env, sources=["src/main.cpp"], link=[qt.Qml])
 app.link(ui)
+app.link(chips.chips_ui)

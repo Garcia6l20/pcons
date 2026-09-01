@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
 from pcons.core.project import Project
 
 from ._qt_test_utils import cxx_env_with_qt, generate_ninja
+
+
+def _qrc_files(qrc: Path) -> dict[str, str]:
+    """The generated .qrc read back as {alias: embedded file path}."""
+    root = ElementTree.parse(qrc).getroot()
+    return {entry.attrib["alias"]: (entry.text or "") for entry in root.iter("file")}
 
 
 @pytest.fixture
@@ -298,6 +305,29 @@ class TestQmlSourceDirs:
 
         assert qml_source_dirs(qml_project) == [child_qml]
 
+    def test_a_subdirectory_entry_is_anchored_at_the_declaring_script(
+        self, qml_project, tmp_path
+    ):
+        """A scanner root has to be a directory that exists, so the entry is
+        resolved against the same root the resource path came from."""
+        from pcons.toolchains.qt.qml import qml_source_dirs
+        from pcons.util.add_subdirectory import add_subdirectory
+
+        sub = tmp_path / "tools" / "widget"
+        (sub / "qml").mkdir(parents=True)
+        (sub / "qml" / "Chip.qml").write_text("import QtQml\nQtObject {}\n")
+        (sub / "pcons-build.py").write_text(
+            "from pcons import context\n"
+            "project = context.current_project\n"
+            "project.QtQmlModule('subui', project.default_environment,\n"
+            "                    uri='My.Sub', qml_files=['qml/Chip.qml'])\n"
+        )
+        env = cxx_env_with_qt(qml_project)
+
+        add_subdirectory("tools/widget", env=env)
+
+        assert qml_source_dirs(qml_project) == [sub / "qml"]
+
 
 class TestQmlFilesKeepTheirPath:
     """An entry is also its path inside the module resource.
@@ -345,27 +375,6 @@ class TestQmlFilesKeepTheirPath:
         assert 'alias="sub/Thing.qml"' in qrc
         assert 'alias="deep/nested/Page.qml"' in qrc
 
-    def test_a_file_above_the_root_keeps_its_dot_dots(self, qml_project, tmp_path):
-        """qt_add_qml_module writes ``../outside/Outside.qml`` verbatim into
-        both files, so pcons does too rather than inventing a rule."""
-        (tmp_path / "outside").mkdir()
-        (tmp_path / "outside" / "Outside.qml").write_text("import QtQuick\nItem {}\n")
-        env = cxx_env_with_qt(qml_project)
-        qml_project.QtQmlModule(
-            "ui",
-            env,
-            uri="My.Module",
-            qml_files=["qml/Main.qml", "../outside/Outside.qml"],
-        )
-        generate_ninja(qml_project)
-
-        module_dir = tmp_path / "build" / "qt.ui"
-        assert (
-            "Outside 1.0 ../outside/Outside.qml"
-            in (module_dir / "qmldir").read_text().splitlines()
-        )
-        assert 'alias="../outside/Outside.qml"' in (module_dir / "ui.qrc").read_text()
-
     def test_a_path_object_entry_becomes_a_slashed_resource_path(
         self, qml_project, tmp_path
     ):
@@ -380,9 +389,96 @@ class TestQmlFilesKeepTheirPath:
         assert "Main 1.0 qml/Main.qml" in (module_dir / "qmldir").read_text()
         assert 'alias="qml/Main.qml"' in (module_dir / "ui.qrc").read_text()
 
-    def test_an_absolute_entry_is_refused(self, qml_project, tmp_path):
-        """qt_add_qml_module errors on an absolute QML_FILES entry: there is no
-        resource path to give it. Measured against Qt 6.11.1."""
+    def test_a_module_declared_in_a_subdirectory_drops_the_subdirectory(
+        self, qml_project, tmp_path
+    ):
+        """The root is the declaring script's directory, as in CMake.
+
+        ``qt_add_qml_module`` resolves QML_FILES against
+        CMAKE_CURRENT_SOURCE_DIR, so a module declared two directories down
+        that lists ``qml/Chip.qml`` puts it at
+        ``qrc:/qt/qml/<uri>/qml/Chip.qml``. The path of the build script that
+        declared the module is not part of the resource layout.
+        """
+        from pcons.util.add_subdirectory import add_subdirectory
+
+        sub = tmp_path / "tools" / "widget"
+        (sub / "qml").mkdir(parents=True)
+        (sub / "qml" / "Chip.qml").write_text("import QtQml\nQtObject {}\n")
+        (sub / "pcons-build.py").write_text(
+            "from pcons import context\n"
+            "project = context.current_project\n"
+            "project.QtQmlModule('subui', project.default_environment,\n"
+            "                    uri='My.Sub', qml_files=['qml/Chip.qml'])\n"
+        )
+        env = cxx_env_with_qt(qml_project)
+
+        add_subdirectory("tools/widget", env=env)
+        generate_ninja(qml_project)
+
+        module_dir = tmp_path / "build" / "qt.subui"
+        assert (
+            "Chip 1.0 qml/Chip.qml" in (module_dir / "qmldir").read_text().splitlines()
+        )
+        embedded = _qrc_files(module_dir / "subui.qrc")
+        assert embedded["qml/Chip.qml"] == str(sub / "qml" / "Chip.qml")
+
+
+class TestQmlEntriesOutsideTheRoot:
+    """The root is ``project.current_dir``, and an entry has to sit under it.
+
+    An entry is also the file's path inside the module resource, so an entry
+    with no place under the root has no resource path either.
+    """
+
+    def test_an_absolute_entry_under_the_root_is_accepted(self, qml_project, tmp_path):
+        """pcons can compute a resource path for it, so it takes it.
+
+        ``qt_add_qml_module`` refuses every absolute entry; that is a CMake
+        limitation, not a rule worth copying.
+        """
+        env = cxx_env_with_qt(qml_project)
+        qml_project.QtQmlModule(
+            "spelled_out", env, uri="My.Module", qml_files=["qml/Main.qml"]
+        )
+        qml_project.QtQmlModule(
+            "absolute",
+            env,
+            uri="My.Other",
+            qml_files=[str(tmp_path / "qml" / "Main.qml")],
+        )
+        generate_ninja(qml_project)
+
+        build = tmp_path / "build"
+        relative_line = (build / "qt.spelled_out" / "qmldir").read_text().splitlines()
+        absolute_line = (build / "qt.absolute" / "qmldir").read_text().splitlines()
+        assert "Main 1.0 qml/Main.qml" in relative_line
+        assert "Main 1.0 qml/Main.qml" in absolute_line
+        assert (
+            _qrc_files(build / "qt.absolute" / "absolute.qrc")["qml/Main.qml"]
+            == _qrc_files(build / "qt.spelled_out" / "spelled_out.qrc")["qml/Main.qml"]
+        )
+
+    def test_an_absolute_entry_outside_the_root_is_refused(self, qml_project, tmp_path):
+        outside = tmp_path.parent / "elsewhere" / "Outside.qml"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("import QtQml\nQtObject {}\n")
+        env = cxx_env_with_qt(qml_project)
+
+        with pytest.raises(ValueError) as excinfo:
+            qml_project.QtQmlModule(
+                "ui", env, uri="My.Module", qml_files=[str(outside)]
+            )
+
+        message = str(excinfo.value)
+        assert str(outside) in message
+        assert str(tmp_path) in message
+
+    def test_an_entry_reaching_above_the_root_is_refused(self, qml_project, tmp_path):
+        """``qt_add_qml_module`` keeps the dot-dots and pcons deliberately does
+        not: an entry above the root has no place under the module's resource
+        prefix, which is the same reason an outside absolute entry is refused.
+        One rule, one message."""
         env = cxx_env_with_qt(qml_project)
 
         with pytest.raises(ValueError) as excinfo:
@@ -390,10 +486,12 @@ class TestQmlFilesKeepTheirPath:
                 "ui",
                 env,
                 uri="My.Module",
-                qml_files=[str(tmp_path / "qml" / "Main.qml")],
+                qml_files=["qml/Main.qml", "../outside/Outside.qml"],
             )
 
-        assert "absolute" in str(excinfo.value)
+        message = str(excinfo.value)
+        assert "../outside/Outside.qml" in message
+        assert str(tmp_path) in message
 
 
 class TestQmlFileCollisions:

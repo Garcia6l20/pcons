@@ -350,9 +350,18 @@ build is described reads as not a singleton.
 Each `qml_files` entry is also the file's path inside the module
 resource, which is what `qt_add_qml_module` does. `qml/pages/Detail.qml`
 is reachable at `qrc:/qt/qml/<uri>/qml/pages/Detail.qml`, and the qmldir
-names that same path, so a hardcoded nested URL resolves. Entries are
-relative to the project root; an absolute one is refused, because there
-is no resource path to give it.
+names that same path, so a hardcoded nested URL resolves.
+
+Entries are relative to the directory of the build script that declares
+the module, the same root `sources=` uses, and the same one CMake uses
+(`CMAKE_CURRENT_SOURCE_DIR`). A module declared through
+`add_subdirectory` therefore spells `qml/Theme.qml` whatever its depth,
+and the location of that build script is not part of the resource
+layout. An absolute entry under that directory works too, and is turned
+back into a relative one. An entry landing *outside* it is refused, `..`
+included: there is no place under the module's resource prefix for it.
+`qt_add_qml_module` differs on both counts, refusing every absolute entry
+and keeping the dot-dots of an upward one.
 
 Two entries whose file names share a stem, such as `pages/Detail.qml` and
 `widgets/Detail.qml`, declare the same QML type twice. The engine
