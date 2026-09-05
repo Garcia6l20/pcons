@@ -263,8 +263,8 @@ class TarfileBuilder:
             target_type="archive",
             defined_at=get_caller_location(),
             project=project,
+            env=env,
         )
-        target._env = env
 
         target._builder_name = "Tarfile"
         target._builder_data = {
@@ -325,8 +325,8 @@ class ZipfileBuilder:
             target_type="archive",
             defined_at=get_caller_location(),
             project=project,
+            env=env,
         )
-        target._env = env
 
         target._builder_name = "Zipfile"
         target._builder_data = {

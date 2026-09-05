@@ -596,3 +596,76 @@ class TestEmsdkSetupPreset:
         assert env.cxx.cmd.endswith("em++")
         assert env.link.cmd.endswith("emcc")
         assert env.ar.cmd.endswith("emar")
+
+
+class TestEnvironmentRemembersItsTarget:
+    """env.cross reads back the preset the environment was retargeted with."""
+
+    def test_env_reads_back_the_preset(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        preset = CrossPreset(
+            name="test",
+            arch="arm64",
+            triple="aarch64-linux-gnu",
+            sysroot="/opt/sysroots/aarch64",
+        )
+        env.apply_cross_preset(preset)
+
+        assert env.cross is preset
+        assert env.cross.sysroot == "/opt/sysroots/aarch64"
+        assert env.cross.triple == "aarch64-linux-gnu"
+
+    def test_an_untouched_env_reads_none(self, test_project):  # noqa: F811
+        assert _make_unix_env().cross is None
+
+    def test_a_clone_carries_the_preset(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        preset = CrossPreset(name="test", arch="arm64", triple="aarch64-linux-gnu")
+        env.apply_cross_preset(preset)
+
+        clone = env.clone()
+        assert clone.cross is preset
+
+        other = CrossPreset(name="other", arch="armv7", triple="arm-linux-gnueabihf")
+        clone.apply_cross_preset(other)
+        assert clone.cross is other
+        assert env.cross is preset
+
+    def test_the_last_preset_wins(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        first = CrossPreset(name="first", arch="arm64", triple="aarch64-linux-gnu")
+        second = CrossPreset(name="second", arch="armv7", triple="arm-linux-gnueabihf")
+        env.apply_cross_preset(first)
+        env.apply_cross_preset(second)
+
+        assert env.cross is second
+
+    def test_a_refused_preset_leaves_cross_alone(self, test_project):  # noqa: F811
+        from pcons.toolchains.llvm import LlvmToolchain
+
+        env = _make_unix_env()
+        env._toolchain = LlvmToolchain()
+        preset = CrossPreset(name="test", arch="arm64", triple="aarch64-linux-gnu")
+        env.apply_cross_preset(preset)
+
+        with pytest.raises(ValueError, match="dedicated toolchain"):
+            env.apply_cross_preset(emscripten())
+
+        assert env.cross is preset
+
+    def test_no_toolchain_records_nothing(self, test_project):  # noqa: F811
+        env = Environment()
+        env.apply_cross_preset(
+            CrossPreset(name="test", arch="arm64", triple="aarch64-linux-gnu")
+        )
+
+        assert env.cross is None

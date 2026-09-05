@@ -676,14 +676,15 @@ class ScannerResolver:
     def _scope_id(self, scanner: Scanner, target: Target) -> str:
         scope_id = scope_id_for(target)
         claim = (scanner.name, scope_id)
+        spelling = target.qualified_name
         owner = self._scope_ids.get(claim)
-        if owner is not None and owner != target.qualified_name:
+        if owner is not None and owner != spelling:
             raise PconsError(
                 f"Scanner '{scanner.name}': targets '{owner}' and "
-                f"'{target.qualified_name}' both map to scope id "
+                f"'{spelling}' both map to scope id "
                 f"'{scope_id}'. Rename one target."
             )
-        self._scope_ids[claim] = target.qualified_name
+        self._scope_ids[claim] = spelling
         return scope_id
 
     def _make_scan_node(

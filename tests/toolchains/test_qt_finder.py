@@ -467,3 +467,111 @@ class TestClosureOrder:
     def test_unknown_module_depends_on_core(self):
         order = _closure_in_dep_order(["WebEngineWidgets"])
         assert order.index("Core") < order.index("WebEngineWidgets")
+
+
+# =============================================================================
+# Per-environment discovery
+# =============================================================================
+
+
+def _qt_env(project, name=None):
+    from tests.toolchains._qt_test_utils import fake_qt_toolchain
+
+    return project.Environment(toolchain=fake_qt_toolchain(), name=name)
+
+
+def _prefixed_pcs(prefix):
+    return {
+        name: PackageDescription(
+            name=name,
+            version=pkg.version,
+            include_dirs=[f"{prefix}/include/qt6"],
+            library_dirs=[f"{prefix}/lib"],
+            libraries=list(pkg.libraries),
+            defines=list(pkg.defines),
+            prefix=prefix,
+        )
+        for name, pkg in _LINUX_PCS.items()
+    }
+
+
+class _PerPrefixPkgConfig:
+    """A pkg-config stand-in whose answers change between calls."""
+
+    def __init__(self, prefixes):
+        self._prefixes = list(prefixes)
+        self.calls = 0
+
+    def _current(self):
+        return self._prefixes[min(self.calls, len(self._prefixes) - 1)]
+
+    def is_available(self):
+        return True
+
+    def find(self, name, version=None, components=None):
+        return _prefixed_pcs(self._current()).get(name)
+
+    def get_variable(self, name, var):
+        return {"prefix": self._current()}.get(var)
+
+
+class TestPerEnvironmentInstalls:
+    def test_two_named_environments_get_two_installs(self, project):
+        host = _qt_env(project, "host")
+        mcu = _qt_env(project, "mcu")
+        fake = _PerPrefixPkgConfig(["/usr", "/opt/cross"])
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            first = find_qt(project, host, modules=["Core"])
+            fake.calls = 1
+            second = find_qt(project, mcu, modules=["Core"])
+        assert first is not second
+        assert first.prefix == Path("/usr")
+        assert second.prefix == Path("/opt/cross")
+        assert qt_finder.qt_install(project, host) is first
+        assert qt_finder.qt_install(project, mcu) is second
+
+    def test_module_targets_belong_to_their_environment(self, project):
+        host = _qt_env(project, "host")
+        mcu = _qt_env(project, "mcu")
+        fake = _PerPrefixPkgConfig(["/usr", "/opt/cross"])
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            first = find_qt(project, host, modules=["Core"])
+            fake.calls = 1
+            second = find_qt(project, mcu, modules=["Core"])
+        assert first.Core.env is host
+        assert second.Core.env is mcu
+        assert project.get_target("Qt6Core@host") is first.Core
+        assert project.get_target("Qt6Core@mcu") is second.Core
+
+    def test_same_environment_probes_once(self, project):
+        host = _qt_env(project, "host")
+        fake = _PerPrefixPkgConfig(["/usr"])
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            first = find_qt(project, host, modules=["Core"])
+            second = find_qt(project, host, modules=["Widgets"])
+        assert first is second
+        assert sorted(second.modules) == ["Core", "Widgets"]
+
+    def test_unnamed_environments_share_one_install(self, project):
+        one = _qt_env(project)
+        two = _qt_env(project)
+        fake = _PerPrefixPkgConfig(["/usr", "/opt/cross"])
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            first = find_qt(project, one, modules=["Core"])
+            fake.calls = 1
+            second = find_qt(project, two, modules=["Core"])
+        assert first is second
+
+    def test_no_environment_uses_the_inherited_one(self, project):
+        host = _qt_env(project, "host")
+        fake = _PerPrefixPkgConfig(["/usr", "/opt/cross"])
+        with _patch_pkgconfig(fake), _no_qtpaths():
+            bare = find_qt(project, modules=["Core"])
+            fake.calls = 1
+            named = find_qt(project, host, modules=["Core"])
+        assert bare is named
+        assert bare.Core.env is host
+
+    def test_qt_install_is_none_before_discovery(self, project):
+        assert qt_finder.qt_install(project) is None
+        assert qt_finder.qt_install(project, _qt_env(project, "host")) is None

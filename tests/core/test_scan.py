@@ -605,7 +605,7 @@ class TestSharedEdgeOwnership:
         from pcons.core.scan import ScannerResolver
 
         project = make_project(tmp_path, monkeypatch)
-        env = SimpleNamespace(register_node=lambda _n: None)
+        env = SimpleNamespace(register_node=lambda _n: None, name=None)
 
         shared_src = FileNode(tmp_path / "shared.scene")
         shared = FileNode("build/obj.shared/shared.pack")
@@ -662,7 +662,7 @@ class TestSharedEdgeOwnership:
         from pcons.core.target import Target
 
         project = make_project(tmp_path, monkeypatch)
-        env = SimpleNamespace(register_node=lambda _n: None)
+        env = SimpleNamespace(register_node=lambda _n: None, name=None)
         shared_src = FileNode(tmp_path / "shared.scene")
         shared = FileNode("build/obj.shared/shared.pack")
         shared._build_info = {"env": env, "sources": [shared_src]}
@@ -697,7 +697,7 @@ class TestSharedEdgeOwnership:
         from pcons.core.target import Target
 
         project = make_project(tmp_path, monkeypatch)
-        env = SimpleNamespace(register_node=lambda _n: None)
+        env = SimpleNamespace(register_node=lambda _n: None, name=None)
         shared_src = FileNode(tmp_path / "shared.scene")
         shared = FileNode("build/obj.shared/shared.pack")
         shared._build_info = {"env": env, "sources": [shared_src]}

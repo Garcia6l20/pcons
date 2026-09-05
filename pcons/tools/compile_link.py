@@ -9,7 +9,7 @@ protocol; the core resolver dispatches to it via the builder registry.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pcons.core.debug import is_enabled, trace, trace_value
@@ -662,6 +662,14 @@ class CompileLinkFactory:
 
         return f"{prefix}{base_name}{suffix}"
 
+    def _output_path(
+        self, target: Target, env: Environment, filename: str, target_type: str
+    ) -> Path:
+        """Where *filename* lands: the target's build dir, plus the kind's directory."""
+        directory = env.output_directory_for(target_type)
+        base = target.build_dir / directory if directory else target.build_dir
+        return base / target.path_resolver.normalize_target_path(filename)
+
     def _create_static_library_output(self, target: Target, env: Environment) -> None:
         """Create static library output node."""
         if not target.intermediate_nodes:
@@ -670,11 +678,8 @@ class CompileLinkFactory:
                 target.name,
             )
             return
-        build_dir = target.build_dir
-        path_resolver = target.path_resolver
-
         lib_name = self._apply_output_naming(target, env, "static_library")
-        lib_path = build_dir / path_resolver.normalize_target_path(lib_name)
+        lib_path = self._output_path(target, env, lib_name, "static_library")
 
         lib_node = self.project.node(lib_path)
         lib_node.add_inputs(target.intermediate_nodes)
@@ -705,11 +710,8 @@ class CompileLinkFactory:
             )
             return
 
-        build_dir = target.build_dir
-        path_resolver = target.path_resolver
-
         lib_name = self._apply_output_naming(target, env, "shared_library")
-        lib_path = build_dir / path_resolver.normalize_target_path(lib_name)
+        lib_path = self._output_path(target, env, lib_name, "shared_library")
 
         lib_node = self.project.node(lib_path)
         lib_node.add_inputs(target.intermediate_nodes)
@@ -728,7 +730,17 @@ class CompileLinkFactory:
         import sys
 
         if sys.platform == "win32":
-            import_lib_path = lib_path.with_suffix(".lib")
+            # An import library is an archive, so archive_directory places it,
+            # the way CMake does. Unset, it follows its DLL rather than falling
+            # back to the build-dir root.
+            import_name = str(PurePosixPath(lib_name).with_suffix(".lib"))
+            archive_directory = env.output_directory_for("static_library")
+            import_lib_path = self._output_path(
+                target,
+                env,
+                import_name,
+                "static_library" if archive_directory is not None else "shared_library",
+            )
             lib_node._build_info["outputs"] = {
                 "primary": {"path": lib_path, "suffix": lib_path.suffix},
                 "import_lib": {"path": import_lib_path, "suffix": ".lib"},
@@ -746,11 +758,8 @@ class CompileLinkFactory:
             )
             return
 
-        build_dir = target.build_dir
-        path_resolver = target.path_resolver
-
         prog_name = self._apply_output_naming(target, env, "program")
-        prog_path = build_dir / path_resolver.normalize_target_path(prog_name)
+        prog_path = self._output_path(target, env, prog_name, "program")
 
         prog_node = self.project.node(prog_path)
         prog_node.add_inputs(target.intermediate_nodes)

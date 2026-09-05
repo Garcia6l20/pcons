@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pcons.core.environment import Environment
+from pcons.core.project import Project
 from pcons.core.toolconfig import ToolConfig
 from pcons.tools import compiler_cache
 
@@ -545,3 +546,124 @@ class TestUseUnifiedWithRequirements:
 
         with pytest.raises(ValueError, match="target.link"):
             env.use(Duck())
+
+
+class TestBuildDirLayout:
+    """Where ``build_prefix`` lands relative to the build directory (#96)."""
+
+    def _sub_project(self, project, tmp_path):
+        (tmp_path / "sub").mkdir(exist_ok=True)
+        with project._enter_subdir("sub"):
+            return Project(name="child", root_dir=tmp_path / "sub")
+
+    def test_plain_project(self, test_project):  # noqa: F811
+        env = test_project.Environment()
+        env.build_prefix = "mcu"
+        assert env.build_dir == Path("build/mcu")
+
+    def test_sub_project_offset_stays_below_the_prefix(self, test_project, tmp_path):  # noqa: F811
+        child = self._sub_project(test_project, tmp_path)
+        env = child.Environment()
+        env.build_prefix = "mcu"
+        assert env.build_dir == Path("build/mcu/sub")
+
+    def test_user_build_dir_takes_the_prefix_below_it(self, test_project):  # noqa: F811
+        env = test_project.Environment()
+        env.build_dir = "build/rel"
+        env.build_prefix = "mcu"
+        assert env.build_dir == Path("build/rel/mcu")
+
+    def test_user_build_dir_in_a_sub_project_drops_the_offset(
+        self,
+        test_project,  # noqa: F811
+        tmp_path,
+    ):
+        """Naming the directory names the whole of it, offset included."""
+        child = self._sub_project(test_project, tmp_path)
+        env = child.Environment()
+        env.build_dir = "build/rel"
+        env.build_prefix = "mcu"
+        assert env.build_dir == Path("build/rel/mcu")
+
+    def test_no_prefix_leaves_the_build_dir_alone(self, test_project):  # noqa: F811
+        env = test_project.Environment()
+        env.build_dir = "build/rel"
+        assert env.build_dir == Path("build/rel")
+
+    def test_setting_order_does_not_matter(self, test_project):  # noqa: F811
+        first = test_project.Environment()
+        first.build_prefix = "mcu"
+        first.build_dir = "build/rel"
+
+        second = test_project.Environment()
+        second.build_dir = "build/rel"
+        second.build_prefix = "mcu"
+
+        assert first.build_dir == second.build_dir == Path("build/rel/mcu")
+
+    def test_build_dir_outside_the_top_build_dir(self, test_project, tmp_path):  # noqa: F811
+        """A project built out of tree has no offset to split off."""
+        child = self._sub_project(test_project, tmp_path)
+        env = child.Environment()
+        env._set_project_build_dir(Path("build"), Path("/elsewhere/out"))
+        env.build_prefix = "mcu"
+        assert env.build_dir == Path("/elsewhere/out/mcu")
+
+
+class TestCloneBuildDir:
+    def test_clone_keeps_the_build_dir(self, test_project):  # noqa: F811
+        env = test_project.Environment()
+        env.build_dir = "build/rel"
+        assert env.clone().build_dir == env.build_dir
+
+    def test_clone_prefix_stays_under_the_parents_build_dir(self, test_project):  # noqa: F811
+        env = test_project.Environment()
+        env.build_dir = "build/rel"
+
+        clone = env.clone()
+        clone.build_prefix = "x"
+
+        assert clone.build_dir == Path("build/rel/x")
+        assert env.build_dir == Path("build/rel")
+
+    def test_clone_keeps_the_sub_project_offset(self, test_project, tmp_path):  # noqa: F811
+        (tmp_path / "sub").mkdir(exist_ok=True)
+        with test_project._enter_subdir("sub"):
+            child = Project(name="child", root_dir=tmp_path / "sub")
+        env = child.Environment()
+
+        clone = env.clone()
+        clone.build_prefix = "mcu"
+
+        assert clone.build_dir == Path("build/mcu/sub")
+
+
+class TestEnvironmentName:
+    def test_the_property_setter_delegates(self, tmp_path) -> None:
+        """Reached through the descriptor: `__setattr__` intercepts every
+        normal assignment, so the setter exists only for type checkers and
+        must not be a second, unvalidated implementation.
+        """
+        project = Project("p", root_dir=tmp_path)
+        env = project.Environment(name="host")
+
+        Environment.name.fset(env, "other")
+        assert env.name == "other"
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            Environment.name.fset(env, "bad@name")
+
+    def test_name_is_settable_after_construction(self, test_project):  # noqa: F811
+        env = test_project.Environment(name="mcu")
+        env.name = "other"
+        assert env.name == "other"
+
+    def test_name_rejects_the_environment_separator(self, test_project):  # noqa: F811
+        env = test_project.Environment(name="mcu")
+        with pytest.raises(ValueError, match="@"):
+            env.name = "bad@name"
+
+    def test_name_can_be_cleared(self, test_project):  # noqa: F811
+        env = test_project.Environment(name="mcu")
+        env.name = None
+        assert env.name is None

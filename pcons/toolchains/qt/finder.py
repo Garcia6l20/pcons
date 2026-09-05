@@ -13,9 +13,9 @@ generation tools (moc/uic/rcc/...), and the Qt version, probing in order:
    ``QT_HOST_LIBEXECS``/``QT_HOST_BINS`` give the tool directory,
    ``QT_INSTALL_LIBS``/``QT_INSTALL_HEADERS`` the libraries.
 
-Discovery is cached per project (each Qt module becomes exactly one
-ImportedTarget, so target identity is stable across the build script);
-repeated calls may add modules.
+Discovery is cached per project and environment (each Qt module becomes
+exactly one ImportedTarget per environment, so target identity is stable
+across the build script); repeated calls may add modules.
 
 Platform requirements are baked into the returned module targets so users
 never see them: MSVC-style compilers get ``/Zc:__cplusplus /permissive-``
@@ -78,11 +78,31 @@ _MODULE_DEPS: dict[str, tuple[str, ...]] = {
     "MultimediaWidgets": ("Multimedia", "Widgets"),
 }
 
-# One QtPackage per project: Qt module targets register with the project,
-# so discovery must not run twice. Weak keys let projects be collected.
-_qt_installs: weakref.WeakKeyDictionary[Project, QtPackage] = (
+# One QtPackage per project and environment name: a cross build and a host
+# build need different installs, and their module targets are told apart by
+# their environments. Weak keys let projects be collected.
+_qt_installs: weakref.WeakKeyDictionary[Project, dict[str | None, QtPackage]] = (
     weakref.WeakKeyDictionary()
 )
+
+
+def _install_key(project: Project, env: Environment | None) -> str | None:
+    """The cache slot an install lands in.
+
+    A caller passing no environment still gets module targets in one: the
+    project's inherited environment, which is what ``Target`` falls back to.
+    Keying on that keeps the cache and the targets it holds in step, so a
+    script mixing ``find_qt(project)`` and ``find_qt(project, env)`` in a
+    single-environment project keeps getting one install.
+    """
+    if env is None:
+        env = project._inherited_environment()
+    return env.name if env is not None else None
+
+
+def qt_install(project: Project, env: Environment | None = None) -> QtPackage | None:
+    """The Qt installation located for *env* in *project*, or None."""
+    return _qt_installs.get(project, {}).get(_install_key(project, env))
 
 
 class QtPackage:
@@ -237,16 +257,20 @@ def find_qt(
     Args:
         project: The project; module targets register with it, and
             discovery is cached on it (repeat calls may add modules).
-        env: When given, the ``qt`` toolchain is added to this environment
-            with moc/uic/rcc paths configured, enabling ``env.qt.*``
-            builders and ``project.QtProgram(...)``. MSVC-style toolchains
-            also get Qt's required compiler flags on the Core module.
+        env: The environment Qt is located for. Discovery is cached per
+            environment name, so a cross build and a host build each get
+            their own install and their own module targets. The ``qt``
+            toolchain is added to the environment with moc/uic/rcc paths
+            configured, enabling ``env.qt.*`` builders and
+            ``project.QtProgram(...)``. MSVC-style toolchains also get
+            Qt's required compiler flags on the Core module.
         modules: Qt module short names, e.g. ["Widgets", "Network"].
             Core is always included.
         version: Optional constraint, e.g. ">=6.4".
         qt_root: Explicit Qt prefix (overrides probing); also taken from
-            the PCONS_QT_ROOT environment variable. First call wins: the
-            cached install is reused by later calls.
+            the PCONS_QT_ROOT environment variable. First call for an
+            environment wins: the cached install is reused by later calls
+            for the same environment.
         private_headers: Modules whose private headers should be added to
             the include path (e.g. ["Core"] for QtCore/x.y.z/private).
         required: If True (default), raise QtNotFoundError when Qt or any
@@ -267,24 +291,24 @@ def find_qt(
             f"{'$PCONS_QT_ROOT' if 'PCONS_QT_ROOT' in os.environ else 'qt_root='})."
         )
 
-    qt = _qt_installs.get(project)
+    qt = qt_install(project, env)
     if qt is not None and qt_root is not None and not qt.prefix.is_relative_to(qt_root):
         logger.warning(
             "find_qt: qt_root=%s ignored — Qt %s at %s is already located "
-            "for this project (discovery is cached; the first call wins).",
+            "for this environment (discovery is cached; the first call wins).",
             qt_root,
             qt.version,
             qt.prefix,
         )
     if qt is None:
-        qt = _probe_pkgconfig(wanted, version, qt_root)
+        qt = _probe_pkgconfig(wanted, version, qt_root, env)
         if qt is None:
-            qt = _probe_qtpaths(wanted, version, qt_root)
+            qt = _probe_qtpaths(wanted, version, qt_root, env)
         if qt is None:
             if not required:
                 return None
             raise QtNotFoundError(_not_found_message(wanted, version, qt_root))
-        _qt_installs[project] = qt
+        _qt_installs.setdefault(project, {})[_install_key(project, env)] = qt
     elif version is not None and not _version_satisfies(qt.version, version):
         if not required:
             return None
@@ -378,7 +402,10 @@ def _pkgconfig_finder(qt_root: Path | None) -> PkgConfigFinder:
 
 
 def _probe_pkgconfig(
-    wanted: list[str], version: str | None, qt_root: Path | None
+    wanted: list[str],
+    version: str | None,
+    qt_root: Path | None,
+    env: Environment | None = None,
 ) -> QtPackage | None:
     """Locate Qt via Qt6*.pc files.
 
@@ -410,7 +437,8 @@ def _probe_pkgconfig(
         descriptions[name] = pkg
 
     modules = {
-        name: ImportedTarget.from_package(pkg) for name, pkg in descriptions.items()
+        name: ImportedTarget.from_package(pkg, env=env)
+        for name, pkg in descriptions.items()
     }
     # Every module depends on Core: the .pc files flatten compile/link
     # flags, but pcons-added platform requirements live on the Core
@@ -423,7 +451,7 @@ def _probe_pkgconfig(
         pkg = finder.find(f"Qt6{name}")
         if pkg is None:
             return None
-        target = ImportedTarget.from_package(pkg)
+        target = ImportedTarget.from_package(pkg, env=env)
         target.link(modules["Core"])
         return target
 
@@ -551,7 +579,10 @@ def _find_qtpaths_query(qt_root: Path | None) -> dict[str, str] | None:
 
 
 def _probe_qtpaths(
-    wanted: list[str], version: str | None, qt_root: Path | None
+    wanted: list[str],
+    version: str | None,
+    qt_root: Path | None,
+    env: Environment | None = None,
 ) -> QtPackage | None:
     """Locate Qt by querying qtpaths/qmake and inspecting the install tree."""
     query = _find_qtpaths_query(qt_root)
@@ -587,7 +618,7 @@ def _probe_qtpaths(
     modules: dict[str, ImportedTarget] = {}
 
     def add_module(name: str, pkg: PackageDescription) -> ImportedTarget:
-        target = ImportedTarget.from_package(pkg)
+        target = ImportedTarget.from_package(pkg, env=env)
         for dep in _MODULE_DEPS.get(name, ("Core",)):
             if dep in modules:
                 target.link(modules[dep])

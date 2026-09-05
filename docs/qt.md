@@ -69,8 +69,18 @@ Probing order:
    without pkg-config files, e.g. the official Qt installer and Windows.
 
 Passing `env` adds the `qt` toolchain to the environment (tool paths for
-moc/uic/rcc), enabling the builders below. Discovery is cached per
-project; call `find_qt` again to add modules.
+moc/uic/rcc), enabling the builders below. Discovery is cached per project
+and per environment name; call `find_qt` again with the same environment to
+add modules, and once per environment to build for two of them:
+
+```python
+host_qt = find_qt(project, host, modules=["Widgets"])
+mcu_qt = find_qt(project, mcu, modules=["Core"])
+```
+
+Each environment gets its own install and its own module targets, told
+apart by `Qt6Core@host` and `Qt6Core@mcu`. Two environments without names
+share one install, because nothing tells them apart.
 
 ## The automoc scan
 
@@ -225,9 +235,17 @@ module builds as an *object* target, so linking it into the app can't
 dead-strip the registrations — no plugin/backing-target split, no
 `Q_INIT_RESOURCE`, no import-path setup.
 
+A QML file starting with `pragma Singleton` is declared `singleton` in the
+qmldir, so the engine hands out the instance rather than the type. Nothing
+to pass: the pragma is read from the file, and editing one re-runs pcons so
+the qmldir keeps up. A generated QML file that does not exist yet when the
+build is described reads as not a singleton.
+
 Not yet included: `qmlcachegen` ahead-of-time QML compilation (the
 embedded QML runs through the normal engine path — functionally
 identical, slightly slower startup) and separate QML plugin libraries.
+`qml_files` entries are embedded under their base name, so a nested layout
+is flattened and two files with one base name collide.
 
 ## Translations
 

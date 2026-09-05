@@ -926,8 +926,8 @@ class MetalLibraryBuilder:
             target_type=METAL_LIBRARY_TARGET_TYPE,
             defined_at=defined_at or get_caller_location(),
             project=project,
+            env=env,
         )
-        target._env = env
         target._builder_name = "MetalLibrary"
 
         if sources:
