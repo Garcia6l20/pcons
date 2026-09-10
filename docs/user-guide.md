@@ -3174,7 +3174,7 @@ any directory that leaves empty. Only the files this target staged are removed -
 the stamp records them - so anything else installed into the same destination is
 left alone.
 
-See `examples/78_overlay_dirs` for a working two-tree overlay.
+See `examples/79_overlay_dirs` for a working two-tree overlay.
 
 ### Generating pkg-config Files
 
