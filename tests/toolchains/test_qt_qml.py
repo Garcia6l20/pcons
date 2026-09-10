@@ -442,7 +442,7 @@ class TestQmlFilesKeepTheirPath:
         add_subdirectory("tools/widget", env=env)
         generate_ninja(qml_project)
 
-        module_dir = tmp_path / "build" / "qt.subui"
+        module_dir = tmp_path / "build" / "tools" / "widget" / "qt.subui"
         assert (
             "Chip 1.0 qml/Chip.qml" in (module_dir / "qmldir").read_text().splitlines()
         )
