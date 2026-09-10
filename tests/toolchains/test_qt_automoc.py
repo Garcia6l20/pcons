@@ -454,7 +454,7 @@ class TestNinjaShape:
         automoc = next(
             line
             for line in content.splitlines()
-            if line.startswith("build qt.app/mocs_compilation.cpp:")
+            if line.startswith("build qt.app/mocs_compilation.cpp")
         )
         assert "$topdir/src/main.cpp" in automoc
         assert "mocs_compilation.cpp.o" in content
@@ -484,7 +484,7 @@ class TestNinjaShape:
         automoc = next(
             line
             for line in content.splitlines()
-            if line.startswith("build qt.app/mocs_compilation.cpp:")
+            if line.startswith("build qt.app/mocs_compilation.cpp")
         )
         assert "|| " in automoc
         assert "gen/extra.h" in automoc.split("|| ", 1)[1]
@@ -734,7 +734,7 @@ class TestAGeneratedDirectoryOnTheScanPath:
         automoc = next(
             line
             for line in content.splitlines()
-            if line.startswith("build qt.app/mocs_compilation.cpp:")
+            if line.startswith("build qt.app/mocs_compilation.cpp")
         )
         assert "|| " in automoc, automoc
         assert "gen.stamp" in automoc.split("|| ", 1)[1], automoc
