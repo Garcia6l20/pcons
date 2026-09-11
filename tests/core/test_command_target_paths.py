@@ -11,7 +11,12 @@ from pcons import Generator, Project
 from pcons.core.errors import PconsError
 from pcons.generators.generator import BaseGenerator
 
-from ._command_test_utils import built_path, file_name_in
+from ._command_test_utils import (
+    as_ninja_command,
+    built_path,
+    file_name_in,
+    runs_as,
+)
 
 
 def _ninja(project: Project) -> str:
@@ -48,7 +53,28 @@ def test_a_target_becomes_the_path_the_generator_writes_for_it(
     built = built_path(project, gen)
 
     assert f"build {built}:" in text
-    assert f"command = {built} $in $out" in text
+    assert f"command = {as_ninja_command(runs_as(built))} $in $out" in text
+
+
+def test_a_target_written_as_an_argument_stays_a_plain_path(
+    tmp_path: Path, gcc_toolchain
+) -> None:
+    """Only the first token is what runs; behind a wrapper the same target is
+    a file the wrapper is given."""
+    project = _project(tmp_path, gcc_toolchain)
+    env = project.Environment(toolchain=gcc_toolchain)
+    gen = project.Program("gen", env, sources=["gen.c"])
+    env.Command(
+        name="run",
+        target=project.build_dir / "out.txt",
+        source=["in.txt"],
+        command=["strip", gen, "$TARGET"],
+    )
+
+    text = _ninja(project)
+    built = built_path(project, gen)
+
+    assert f"command = strip {built} $out" in text
 
 
 def test_the_target_is_a_dependency_of_the_command(
@@ -111,7 +137,7 @@ def test_a_tool_from_another_environment_carries_its_prefix(
     text = _ninja(project)
     built = built_path(project, gen)
 
-    assert f"command = {built} $in $out" in text
+    assert f"command = {as_ninja_command(runs_as(built))} $in $out" in text
     assert f"| {built}" in _line(text, "build tgt/out.txt:")
 
 
@@ -133,7 +159,7 @@ def test_a_file_node_names_one_output_of_several(tmp_path: Path, gcc_toolchain) 
 
     text = _ninja(project)
 
-    assert "command = b.txt $out" in text
+    assert f"command = {as_ninja_command(runs_as('b.txt'))} $out" in text
     assert "| b.txt" in _line(text, "build out.txt:")
 
 
@@ -192,3 +218,73 @@ def test_make_writes_the_same_path(tmp_path: Path, gcc_toolchain) -> None:
 
     assert "gen" in lines[rule].split("|")[0]
     assert file_name_in(lines[rule + 1].split()[0]) == gen.output_nodes[0].path.name
+
+
+def test_the_main_resolve_loop_reaches_every_command(
+    tmp_path: Path, gcc_toolchain
+) -> None:
+    """The rewrite runs in the Command factory, which only the main resolve
+    loop dispatches. A hook that created a Command target after that loop --
+    a toolchain's after_resolve, the scanner wiring -- would leave its command
+    naming objects the generators cannot render, so the invariant is that no
+    such target exists once resolve() returns."""
+    project = _project(tmp_path, gcc_toolchain)
+    env = project.Environment(toolchain=gcc_toolchain)
+    gen = project.Program("gen", env, sources=["gen.c"])
+    env.Command(
+        name="run",
+        target=project.build_dir / "out.txt",
+        source=["in.txt"],
+        command=[gen, "$SOURCE", "$TARGET"],
+    )
+    env.Command(
+        name="tooled",
+        target=project.build_dir / "tooled.txt",
+        tool=gen,
+        source=["in.txt"],
+        command="$TOOL $SOURCE $TARGET",
+    )
+
+    project.resolve()
+
+    commands = [t for t in project.targets if t._builder_name == "Command"]
+    assert commands
+    assert all(t._resolved for t in commands)
+
+    from pcons.core.node import FileNode
+    from pcons.core.subst import ToolPath
+    from pcons.core.target import Target
+
+    for node in project._nodes.values():
+        if not isinstance(node, FileNode) or not node._build_info:
+            continue
+        command = node._build_info.get("command") or []
+        if isinstance(command, str):
+            continue
+        assert not [
+            token
+            for token in command
+            if isinstance(token, (Target, FileNode, ToolPath))
+        ]
+
+
+def test_a_command_that_declares_no_output_resolves(
+    tmp_path: Path, gcc_toolchain
+) -> None:
+    """The rewrite reads the command off the first output node, so a command
+    with no output has nothing to rewrite and has to say so rather than
+    reaching for a node that is not there."""
+    project = _project(tmp_path, gcc_toolchain)
+    env = project.Environment(toolchain=gcc_toolchain)
+    gen = project.Program("gen", env, sources=["gen.c"])
+    outputless = env.Command(
+        name="run",
+        target=[],
+        source=["in.txt"],
+        command=[gen, "$SOURCE"],
+    )
+
+    project.resolve()
+
+    assert outputless._resolved
+    assert not outputless.output_nodes
