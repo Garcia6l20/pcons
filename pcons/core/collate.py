@@ -428,6 +428,8 @@ def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:
     edge_args = manifest.get("edge_args")
     plan = _Plan()
     unresolved: list[tuple[str, str]] = []
+    scope_provides: dict[str, str] = {}
+    scope_requires: dict[str, str] = {}
 
     for record in records:
         out: str = record["out"]
@@ -451,6 +453,8 @@ def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:
                     )
                 continue
             resolved_requires.append((name, provide.path))
+        scope_provides.update(provides)
+        scope_requires.update(resolved_requires)
 
         extra_outputs = [_norm(str(p)) for p in (info.get("extra_outputs") or [])]
         extra_deps = [_norm(str(p)) for p in (info.get("extra_deps") or [])]
@@ -491,6 +495,25 @@ def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:
                     _render_args_file(edge_args, provides, resolved_requires),
                 )
             )
+
+    # The scope's args file, for the target's link: everything its edges
+    # required, resolved, in the scanner's line format.
+    link_args_file = manifest.get("link_args_file")
+    if link_args_file:
+        link_args = manifest.get("link_args") or edge_args
+        if link_args is None:
+            raise CollateError(
+                f"scope '{scope}' names a link_args_file but the scanner "
+                f"configures neither link_args nor edge_args"
+            )
+        plan.args_files.append(
+            (
+                _norm(str(link_args_file)),
+                _render_args_file(
+                    link_args, scope_provides, sorted(scope_requires.items())
+                ),
+            )
+        )
 
     if unresolved:
         listing = "\n  ".join(f"edge '{out}' requires '{n}'" for out, n in unresolved)

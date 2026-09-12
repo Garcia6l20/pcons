@@ -99,6 +99,18 @@ class EdgeArgsSpec:
     include: Literal["requires", "requires+provides"] = "requires+provides"
 
 
+def _args_spec_json(spec: EdgeArgsSpec | None) -> dict[str, Any] | None:
+    """An args-file spec as the manifest carries it, for collate to render."""
+    if spec is None:
+        return None
+    return {
+        "suffix": spec.suffix,
+        "var": spec.var,
+        "format": {"header": list(spec.format.header), "line": spec.format.line},
+        "include": spec.include,
+    }
+
+
 @dataclass(frozen=True)
 class Scanner:
     """A declared discovered-dependency scanner.
@@ -499,19 +511,8 @@ class ScannerResolver:
             ],
             "provide_template": scanner.provide_template,
             "on_unresolved": scanner.on_unresolved,
-            "edge_args": (
-                {
-                    "suffix": scanner.edge_args.suffix,
-                    "var": scanner.edge_args.var,
-                    "format": {
-                        "header": list(scanner.edge_args.format.header),
-                        "line": scanner.edge_args.format.line,
-                    },
-                    "include": scanner.edge_args.include,
-                }
-                if scanner.edge_args
-                else None
-            ),
+            "edge_args": _args_spec_json(scanner.edge_args),
+            "link_args": _args_spec_json(scanner.link_args),
             "edges": manifest_edges,
         }
         if scanner.manifest_extra is not None:

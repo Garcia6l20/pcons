@@ -786,6 +786,47 @@ class TestExports:
         assert (tmp_path / m["exports_out"]).read_text().endswith("}\n")
 
 
+class TestLinkArgs:
+    """The scope's argument file, for the target's link: what every edge of
+    the scope required, resolved, in the scanner's line format."""
+
+    def test_the_link_args_file_lists_the_scopes_resolved_requires(
+        self, tmp_path: Path
+    ) -> None:
+        m = manifest(
+            provide_template="packs/{name}.pack",
+            link_args_file="scope.linkargs",
+            link_args={"format": {"line": "{name} {path}"}, "include": "requires"},
+            edges=[
+                {
+                    "out": "a.pack",
+                    "info": scan_info(
+                        tmp_path,
+                        "a.scaninfo.json",
+                        provides=[{"name": "alpha"}],
+                        extra_outputs=["packs/alpha.pack"],
+                    ),
+                },
+                {
+                    "out": "b.pack",
+                    "info": scan_info(
+                        tmp_path,
+                        "b.scaninfo.json",
+                        requires=["alpha"],
+                        extra_outputs=["packs/b.pack"],
+                    ),
+                },
+            ],
+        )
+
+        assert collate(m, tmp_path) == 0
+        assert (tmp_path / "scope.linkargs").read_text() == "alpha packs/alpha.pack\n"
+
+    def test_a_link_args_file_needs_a_spec(self, tmp_path: Path) -> None:
+        m = manifest(edges=[], link_args_file="scope.linkargs")
+        assert collate(m, tmp_path) == 1
+
+
 class TestEdgeArgs:
     """Per-edge argument files."""
 
