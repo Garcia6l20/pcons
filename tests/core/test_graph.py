@@ -70,6 +70,17 @@ class TestTopologicalSortTargets:
 
 
 class TestDetectCycles:
+    def test_a_depends_cycle_between_static_libraries_is_refused(self, test_project):  # noqa: F811
+        """Static libraries may link each other in a cycle, but a depends()
+        edge says "build that first", which no order satisfies in a loop."""
+        la = Target("la", target_type="static_library")
+        lb = Target("lb", target_type="static_library")
+        la.depends(lb)
+        lb.depends(la)
+
+        with pytest.raises(DependencyCycleError, match="must be built after"):
+            topological_sort_targets([la, lb])
+
     def test_no_cycle(self, test_project):  # noqa: F811
         a = Target("A")
         b = Target("B")

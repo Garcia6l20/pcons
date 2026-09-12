@@ -50,7 +50,13 @@ LINKABLE_IN_A_CYCLE: frozenset[str] = frozenset(
 
 
 def cycle_reason(members: list[Target]) -> str | None:
-    """Why *members* may not form a cycle, or None when they may."""
+    """Why *members* may not form a cycle, or None when they may.
+
+    Only link edges may close a cycle: a depends() edge, or a target whose
+    output is another's source, says "build that first", which no order can
+    satisfy in a loop.
+    """
+    names = {target.qualified_name for target in members}
     for target in members:
         if target.target_type not in LINKABLE_IN_A_CYCLE:
             kind = target.target_type or "target"
@@ -59,6 +65,18 @@ def cycle_reason(members: list[Target]) -> str | None:
                 f"object libraries and header-only libraries may link each "
                 f"other in a cycle"
             )
+        built_first = (
+            *target._dependency_targets(),
+            *(t for t in (target._pending_sources or ()) if isinstance(t, Target)),
+        )
+        for dep in built_first:
+            if dep.qualified_name in names:
+                return (
+                    f"{target.qualified_name} must be built after "
+                    f"{dep.qualified_name}, which is in the same cycle; only "
+                    f"link() edges may run in a cycle, since a linked archive "
+                    f"needs no build order"
+                )
     return None
 
 
