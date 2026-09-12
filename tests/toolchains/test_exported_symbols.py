@@ -71,6 +71,24 @@ class TestUnixRealization:
         assert not any(isinstance(f, PathToken) for f in flags)
 
     @patch("pcons.toolchains.unix.get_platform")
+    def test_a_linux_executable_takes_a_dynamic_list(self, mock_platform, test_project):  # noqa: F811
+        """A version script only restricts what an executable would export,
+        which without --export-dynamic is nothing; a dynamic list names
+        what it exports."""
+        mock_platform.return_value.is_apple = False
+        mock_platform.return_value.is_macos = False
+        mock_platform.return_value.is_linux = True
+        mock_platform.return_value.is_windows = False
+        target = Target("host", target_type="program")
+        target.set_option("exported_symbols", ["host_api", "host_*"])
+
+        flags = GccToolchain().get_link_flags_for_target(target, "host", [])
+
+        (token,) = [f for f in flags if isinstance(f, PathToken)]
+        assert token.prefix == "-Wl,--dynamic-list="
+        assert Path(token.path).read_text() == "{ host_api; host_*; };\n"
+
+    @patch("pcons.toolchains.unix.get_platform")
     def test_an_executable_exports_too(self, mock_platform, test_project):  # noqa: F811
         """A host program that plugins call back into names its API the
         same way; it gets no install name, only the export list."""

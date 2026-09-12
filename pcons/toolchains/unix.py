@@ -403,8 +403,9 @@ class UnixToolchain(BaseToolchain):
         """The linker's own way to export only the named symbols.
 
         For a shared library or an executable that plugins call back into.
-        macOS takes a symbol list (``-exported_symbols_list``), Linux a
-        version script; both accept ``*`` patterns. Names are the C names:
+        macOS takes a symbol list (``-exported_symbols_list``) for either;
+        GNU ld a version script for a library and a dynamic list for an
+        executable. All accept ``*`` patterns. Names are the C names:
         the Darwin underscore is added here. The file is written under the
         target's build directory and, being registered, the link depends
         on it.
@@ -430,6 +431,19 @@ class UnixToolchain(BaseToolchain):
                 )
             ]
         if not platform.is_windows:
+            if target.target_type == "program":
+                # A version script only restricts what an executable would
+                # export, which without --export-dynamic is nothing; a
+                # dynamic list names what it exports, and only that.
+                text = "{ " + " ".join(f"{s};" for s in symbols) + " };\n"
+                path = self._write_link_input(target, ".dynlist", text)
+                return [
+                    PathToken(
+                        prefix="-Wl,--dynamic-list=",
+                        path=str(path),
+                        path_type="absolute",
+                    )
+                ]
             text = "{ global: " + " ".join(f"{s};" for s in symbols) + " local: *; };\n"
             path = self._write_link_input(target, ".version", text)
             return [
