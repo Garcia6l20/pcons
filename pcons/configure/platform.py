@@ -54,6 +54,11 @@ class Platform:
         return self.os == "linux"
 
     @property
+    def is_apple(self) -> bool:
+        """macOS or iOS: Apple's linker and Mach-O conventions."""
+        return self.os in ("darwin", "ios")
+
+    @property
     def is_posix(self) -> bool:
         """True if running on a POSIX-like system."""
         return self.os in ("linux", "darwin", "freebsd", "openbsd", "netbsd")

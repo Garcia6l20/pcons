@@ -8,10 +8,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pcons.configure.platform import get_platform
+from pcons.configure.platform import Platform, get_platform
 from pcons.core.preset import Preset, ToolContribution
 from pcons.core.subst import PathToken, TargetPath
 from pcons.core.target import register_target_option
+from pcons.toolchains.gnu_common import shared_library_flag
 from pcons.tools.toolchain import BaseToolchain
 from pcons.util.macos import apple_sdk_for_triple
 
@@ -78,6 +79,11 @@ class UnixToolchain(BaseToolchain):
                 f'toolchain="wasi".'
             )
         super().apply_cross_preset(env, preset)
+        # The shared-library flag is the target's, not the host's: an Android
+        # library linked on a Mac takes -shared, not -dynamiclib.
+        target = getattr(preset, "target_platform", None)
+        if target is not None and env.has_tool("link") and "sharedflag" in env.link:
+            env.link.sharedflag = shared_library_flag(target)
 
     # Named feature presets; see docs/presets.md.
     FEATURE_PRESETS: dict[str, dict[str, list[str]]] = {
@@ -307,19 +313,30 @@ class UnixToolchain(BaseToolchain):
         """Return the object file suffix for Unix toolchains."""
         return ".o"
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env: Environment | None = None
+    ) -> list[str]:
         """Return additional compile flags needed for the target type.
 
-        Shared libraries need -fPIC on Linux and other non-macOS POSIX
-        systems; on 64-bit macOS PIC is the default.
+        Shared libraries need -fPIC on Linux, Android and the BSDs; on
+        64-bit macOS PIC is the default. The platform is the one *env*
+        builds for, when it says.
         """
-        platform = get_platform()
+        platform = env.target if env is not None else get_platform()
 
-        if target_type == "shared_library":
-            if platform.is_linux or (platform.is_posix and not platform.is_macos):
-                return ["-fPIC"]
+        if target_type == "shared_library" and not (
+            platform.is_apple or platform.is_windows
+        ):
+            return ["-fPIC"]
 
         return []
+
+    @staticmethod
+    def _target_platform(target: Target) -> Platform:
+        """The platform *target* is built for: its environment's, or the
+        host's when it has none."""
+        env = getattr(target, "_env", None)
+        return env.target if env is not None else get_platform()
 
     #: Flag that carries a shared library's own name, per platform.
     _INSTALL_NAME_FLAGS = {"macos": "-Wl,-install_name,", "linux": "-Wl,-soname,"}
@@ -372,11 +389,13 @@ class UnixToolchain(BaseToolchain):
         return flags
 
     def link_group_tokens(
-        self, archives: Sequence[PathToken]
+        self, archives: Sequence[PathToken], env: Environment | None = None
     ) -> list[FlagToken] | None:
         """GNU ld and lld resolve a cycle of archives only inside a group;
-        Apple's ld rescans on its own and takes no group option."""
-        if get_platform().is_macos:
+        Apple's ld rescans on its own and takes no group option. Which
+        linker is *env*'s target's, not the host's."""
+        platform = env.target if env is not None else get_platform()
+        if platform.is_apple:
             return None
         return ["-Wl,--start-group", *archives, "-Wl,--end-group"]
 
@@ -397,8 +416,8 @@ class UnixToolchain(BaseToolchain):
         )
         if not symbols:
             return []
-        platform = get_platform()
-        if platform.is_macos:
+        platform = self._target_platform(target)
+        if platform.is_apple:
             text = "".join(
                 f"{s}\n" if s.startswith("_") else f"_{s}\n" for s in symbols
             )
@@ -410,7 +429,7 @@ class UnixToolchain(BaseToolchain):
                     path_type="absolute",
                 )
             ]
-        if platform.is_linux:
+        if not platform.is_windows:
             text = "{ global: " + " ".join(f"{s};" for s in symbols) + " local: *; };\n"
             path = self._write_link_input(target, ".version", text)
             return [
@@ -418,6 +437,13 @@ class UnixToolchain(BaseToolchain):
                     prefix="-Wl,--version-script=", path=str(path), path_type="absolute"
                 )
             ]
+        logger.warning(
+            "%s: exported_symbols is not realized for %s targets with %s; "
+            "every symbol stays exported",
+            target.name,
+            platform.os,
+            self.name,
+        )
         return []
 
     def _install_name_flags(
@@ -429,13 +455,13 @@ class UnixToolchain(BaseToolchain):
         if explicit == "":
             return []  # explicitly disabled
 
-        platform = get_platform()
-        if platform.is_macos:
+        platform = self._target_platform(target)
+        if platform.is_apple:
             flag, auto_prefix = self._INSTALL_NAME_FLAGS["macos"], "@rpath/"
-        elif platform.is_linux:
-            flag, auto_prefix = self._INSTALL_NAME_FLAGS["linux"], ""
-        else:
+        elif platform.is_windows:
             return []
+        else:
+            flag, auto_prefix = self._INSTALL_NAME_FLAGS["linux"], ""
 
         # A hand-written one wins. The marker can't be compared against the
         # caller's string flags, so this is what `existing_flags` is for, and

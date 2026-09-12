@@ -57,8 +57,10 @@ class TestGccTargetArch:
 
         # Mock macOS platform
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = True
             mock_platform.return_value.is_macos = True
             mock_platform.return_value.is_linux = False
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             toolchain.apply_target_arch(env, "arm64")
@@ -86,8 +88,10 @@ class TestGccTargetArch:
         toolchain = GccToolchain()
 
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = True
             mock_platform.return_value.is_macos = True
             mock_platform.return_value.is_linux = False
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             toolchain.apply_target_arch(env, "x86_64")
@@ -113,8 +117,10 @@ class TestGccTargetArch:
         toolchain = GccToolchain()
 
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = False
             mock_platform.return_value.is_macos = False
             mock_platform.return_value.is_linux = True
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             with pytest.raises(ValueError, match="cross preset"):
@@ -146,8 +152,10 @@ class TestLlvmTargetArch:
         toolchain = LlvmToolchain()
 
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = True
             mock_platform.return_value.is_macos = True
             mock_platform.return_value.is_linux = False
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             toolchain.apply_target_arch(env, "arm64")
@@ -350,8 +358,10 @@ class TestEnvironmentSetTargetArch:
         env._toolchain = toolchain
 
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = True
             mock_platform.return_value.is_macos = True
             mock_platform.return_value.is_linux = False
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             env.set_target_arch("arm64")
@@ -382,8 +392,10 @@ class TestEnvironmentSetTargetArch:
 
         # Then apply target arch
         with patch("pcons.toolchains.unix.get_platform") as mock_platform:
+            mock_platform.return_value.is_apple = True
             mock_platform.return_value.is_macos = True
             mock_platform.return_value.is_linux = False
+            mock_platform.return_value.is_windows = False
             mock_platform.return_value.is_posix = True
 
             env.set_target_arch("arm64")

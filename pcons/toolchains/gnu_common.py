@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pcons.configure.platform import get_platform
+from pcons.configure.platform import Platform, get_platform
 from pcons.core.builder import CommandBuilder, MultiOutputBuilder, OutputSpec
 from pcons.core.subst import NodeVar, SourcePath, TargetPath
 
@@ -88,16 +88,24 @@ def _link_tail() -> list[object]:
     ]
 
 
+def shared_library_flag(platform: Platform) -> str:
+    """The driver flag that links a shared library for *platform*."""
+    return "-dynamiclib" if platform.is_apple else "-shared"
+
+
 def gnu_link_vars(cmd: str) -> dict[str, object]:
     """Default vars for a GNU-style link tool (gcc/clang/gfortran).
+
+    ``sharedflag`` is the host's; a cross preset that names its target
+    platform sets it for that platform (UnixToolchain.apply_cross_preset).
 
     Args:
         cmd: Default linker command (e.g. "gcc", "clang", "gfortran").
     """
-    shared_flag = "-dynamiclib" if get_platform().is_macos else "-shared"
     return {
         "cmd": cmd,
         "flags": [],
+        "sharedflag": shared_library_flag(get_platform()),
         "lprefix": "-l",
         "libs": [],
         "Lprefix": "-L",
@@ -108,7 +116,7 @@ def gnu_link_vars(cmd: str) -> dict[str, object]:
         "fprefix": "-framework",
         "frameworks": [],
         "progcmd": ["$link.cmd", "$link.flags", *_link_tail()],
-        "sharedcmd": ["$link.cmd", shared_flag, "$link.flags", *_link_tail()],
+        "sharedcmd": ["$link.cmd", "$link.sharedflag", "$link.flags", *_link_tail()],
     }
 
 

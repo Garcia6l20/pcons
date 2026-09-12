@@ -169,7 +169,9 @@ class MsvcCompatibleToolchain(BaseToolchain):
         """Return the archiver tool name (lib for MSVC-compatible)."""
         return "lib"
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env: Environment | None = None
+    ) -> list[str]:
         """Return additional compile flags for target type.
 
         MSVC-compatible toolchains don't need special flags like -fPIC.

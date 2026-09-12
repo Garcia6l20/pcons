@@ -349,7 +349,7 @@ class CompileLinkFactory:
         toolchain = env._toolchain
         if toolchain is not None and target.target_type is not None:
             target_type_flags = toolchain.get_compile_flags_for_target_type(
-                str(target.target_type)
+                str(target.target_type), env=env
             )
             for flag in target_type_flags:
                 if flag not in effective.compile_flags:
@@ -925,7 +925,7 @@ class CompileLinkFactory:
             rel = self.project._path_resolver.make_execution_relative
             return [PathToken(path=rel(n.path), path_type="build") for n in nodes]
 
-        group = toolchain.link_group_tokens(tokens(dep_libs[first : last + 1]))
+        group = toolchain.link_group_tokens(tokens(dep_libs[first : last + 1]), env=env)
         if group is None:
             return None
         return [*tokens(dep_libs[:first]), *group, *tokens(dep_libs[last + 1 :])]

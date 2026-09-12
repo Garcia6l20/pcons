@@ -104,7 +104,9 @@ class _TestToolchain(UnixToolchain):
             raise NotImplementedError
         return ".a"
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env=None
+    ) -> list[str]:
         return []
 
     def get_source_handler(self, suffix: str) -> SourceHandler | None:

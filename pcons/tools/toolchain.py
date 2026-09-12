@@ -712,12 +712,15 @@ class Toolchain(Protocol):
         """
         ...
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
-        """Return additional compile flags needed for the target type."""
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env: Environment | None = None
+    ) -> list[str]:
+        """Return additional compile flags needed for the target type, for
+        the platform *env* builds for."""
         ...
 
     def link_group_tokens(
-        self, archives: Sequence[PathToken]
+        self, archives: Sequence[PathToken], env: Environment | None = None
     ) -> list[FlagToken] | None:
         """How this linker takes archives that need each other's symbols.
 
@@ -1299,13 +1302,16 @@ class BaseToolchain(ABC):
         """Return filename for a program."""
         return f"{self.get_output_prefix('program')}{name}{self.get_output_suffix('program')}"
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env: Environment | None = None
+    ) -> list[str]:
         """Return additional compile flags for a target type (e.g. -fPIC for
-        shared libraries on Linux). Base: none."""
+        shared libraries on Linux), for the platform *env* builds for.
+        Base: none."""
         return []
 
     def link_group_tokens(
-        self, archives: Sequence[PathToken]
+        self, archives: Sequence[PathToken], env: Environment | None = None
     ) -> list[FlagToken] | None:
         """Archives in a link cycle stay plain link inputs. Base: None."""
         return None

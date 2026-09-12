@@ -71,7 +71,9 @@ class WasmToolchain(UnixToolchain):
             )
         return ".a"  # static library
 
-    def get_compile_flags_for_target_type(self, target_type: str) -> list[str]:
+    def get_compile_flags_for_target_type(
+        self, target_type: str, env: Environment | None = None
+    ) -> list[str]:
         # No -fPIC needed for WebAssembly
         if target_type == "shared_library":
             raise NotImplementedError(

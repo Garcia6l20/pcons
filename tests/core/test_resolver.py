@@ -709,7 +709,7 @@ class TestResolverSharedLibraryCompileFlags:
         )
         # Need to patch in multiple places
         monkeypatch.setattr(
-            "pcons.toolchains.unix.get_platform", lambda: linux_platform
+            "pcons.configure.platform.get_platform", lambda: linux_platform
         )
 
         src_file = tmp_path / "lib.c"
@@ -753,7 +753,7 @@ class TestResolverSharedLibraryCompileFlags:
             object_suffix=".o",
         )
         monkeypatch.setattr(
-            "pcons.toolchains.unix.get_platform", lambda: macos_platform
+            "pcons.configure.platform.get_platform", lambda: macos_platform
         )
 
         src_file = tmp_path / "lib.c"
@@ -797,7 +797,7 @@ class TestResolverSharedLibraryCompileFlags:
             object_suffix=".o",
         )
         monkeypatch.setattr(
-            "pcons.toolchains.unix.get_platform", lambda: linux_platform
+            "pcons.configure.platform.get_platform", lambda: linux_platform
         )
 
         src_file = tmp_path / "lib.c"
@@ -841,7 +841,7 @@ class TestResolverSharedLibraryCompileFlags:
             object_suffix=".o",
         )
         monkeypatch.setattr(
-            "pcons.toolchains.unix.get_platform", lambda: linux_platform
+            "pcons.configure.platform.get_platform", lambda: linux_platform
         )
 
         src_file = tmp_path / "main.c"

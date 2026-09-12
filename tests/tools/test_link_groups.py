@@ -10,15 +10,17 @@ implicit dependencies so the link still waits for them.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 
 from pcons import Project
+from pcons.core.environment import Environment
 from pcons.core.errors import DependencyCycleError
 from pcons.generators.generator import BaseGenerator
 from pcons.generators.makefile import MakefileGenerator
 from pcons.generators.ninja import NinjaGenerator
+from pcons.toolchains.presets import target_platform_for_triple
 
 
 def _project(tmp_path: Path, gcc_toolchain) -> tuple[Project, object]:
@@ -57,19 +59,26 @@ def _archive(target) -> str:
     return target.output_nodes[0].path.name
 
 
+def _target(triple: str):
+    """Pin what every environment builds for: the group decision reads
+    env.target, and only that, so nothing else about the host changes."""
+    return patch.object(
+        Environment,
+        "target",
+        new_callable=PropertyMock,
+        return_value=target_platform_for_triple(triple),
+    )
+
+
 @pytest.fixture
 def linux_platform():
-    with patch("pcons.toolchains.unix.get_platform") as mock_platform:
-        mock_platform.return_value.is_macos = False
-        mock_platform.return_value.is_linux = True
+    with _target("x86_64-linux-gnu"):
         yield
 
 
 @pytest.fixture
 def macos_platform():
-    with patch("pcons.toolchains.unix.get_platform") as mock_platform:
-        mock_platform.return_value.is_macos = True
-        mock_platform.return_value.is_linux = False
+    with _target("arm64-apple-darwin"):
         yield
 
 

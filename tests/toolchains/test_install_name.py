@@ -51,8 +51,10 @@ def _make_shared_target(name: str = "foo") -> Target:
 class TestGccInstallName:
     @patch("pcons.toolchains.unix.get_platform")
     def test_macos_default_install_name(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = True
         mock_platform.return_value.is_macos = True
         mock_platform.return_value.is_linux = False
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         flags = tc.get_link_flags_for_target(target, "libfoo.dylib", [])
@@ -62,8 +64,10 @@ class TestGccInstallName:
 
     @patch("pcons.toolchains.unix.get_platform")
     def test_macos_explicit_install_name(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = True
         mock_platform.return_value.is_macos = True
         mock_platform.return_value.is_linux = False
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         target.set_option("install_name", "/usr/local/lib/libfoo.2.dylib")
@@ -72,8 +76,10 @@ class TestGccInstallName:
 
     @patch("pcons.toolchains.unix.get_platform")
     def test_macos_disabled_install_name(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = True
         mock_platform.return_value.is_macos = True
         mock_platform.return_value.is_linux = False
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         target.set_option("install_name", "")
@@ -82,8 +88,10 @@ class TestGccInstallName:
 
     @patch("pcons.toolchains.unix.get_platform")
     def test_linux_default_soname(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = False
         mock_platform.return_value.is_macos = False
         mock_platform.return_value.is_linux = True
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         flags = tc.get_link_flags_for_target(target, "libfoo.so", [])
@@ -91,8 +99,10 @@ class TestGccInstallName:
 
     @patch("pcons.toolchains.unix.get_platform")
     def test_linux_explicit_soname(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = False
         mock_platform.return_value.is_macos = False
         mock_platform.return_value.is_linux = True
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         target.set_option("install_name", "libfoo.so.2")
@@ -101,8 +111,10 @@ class TestGccInstallName:
 
     @patch("pcons.toolchains.unix.get_platform")
     def test_linux_disabled_soname(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = False
         mock_platform.return_value.is_macos = False
         mock_platform.return_value.is_linux = True
+        mock_platform.return_value.is_windows = False
         tc = GccToolchain()
         target = _make_shared_target()
         target.set_option("install_name", "")
@@ -125,8 +137,10 @@ class TestGccInstallName:
 class TestLlvmInstallName:
     @patch("pcons.toolchains.unix.get_platform")
     def test_macos_default(self, mock_platform, test_project):  # noqa: F811
+        mock_platform.return_value.is_apple = True
         mock_platform.return_value.is_macos = True
         mock_platform.return_value.is_linux = False
+        mock_platform.return_value.is_windows = False
         tc = LlvmToolchain()
         target = _make_shared_target()
         flags = tc.get_link_flags_for_target(target, "libfoo.dylib", [])
@@ -250,8 +264,10 @@ class TestSharedLibrariesShareOneRule:
         from pcons.toolchains.gcc import GccToolchain
 
         with patch("pcons.toolchains.unix.get_platform") as platform:
+            platform.return_value.is_apple = is_macos
             platform.return_value.is_macos = is_macos
             platform.return_value.is_linux = not is_macos
+            platform.return_value.is_windows = False
             flags = GccToolchain().get_link_flags_for_target(
                 _make_shared_target(), "libfoo", [written]
             )
@@ -274,8 +290,10 @@ class TestHandWrittenFlagSpellings:
     )
     def test_either_spelling_suppresses_the_automatic_one(self, written, test_project):  # noqa: F811
         with patch("pcons.toolchains.unix.get_platform") as platform:
+            platform.return_value.is_apple = False
             platform.return_value.is_macos = False
             platform.return_value.is_linux = True
+            platform.return_value.is_windows = False
             flags = GccToolchain().get_link_flags_for_target(
                 _make_shared_target(), "libfoo.so", written
             )
