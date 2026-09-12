@@ -1827,13 +1827,15 @@ class Environment(_EnvironmentStubs):
                 for src in source_list
             ]
 
+        # A program the command runs never appears in the command's own
+        # depfile, so it is an implicit dependency whatever the edge records.
         for dep in command_deps:
-            cmd_target.depends(dep)
+            cmd_target.depends(dep, on_change=True)
 
         if tool is not None:
             cmd_target._builder_data["tool"] = tool
             if isinstance(tool, TargetClass):
-                cmd_target.depends(tool)
+                cmd_target.depends(tool, on_change=True)
 
         # Apply extra implicit dependencies
         if depends is not None:

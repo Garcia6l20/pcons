@@ -256,3 +256,28 @@ def test_project_command_takes_a_tool_too(tmp_path: Path, gcc_toolchain) -> None
     )
 
     assert gen in run.dependencies
+
+
+def test_the_tool_is_an_implicit_dependency_even_with_a_depfile(
+    tmp_path: Path, gcc_toolchain
+) -> None:
+    """A depfile records what the command read, never the program that ran
+    it, so a rebuilt tool must rerun the command: an implicit dependency,
+    not the order-only one a depfile edge would otherwise settle for."""
+    project = _project(tmp_path)
+    env = project.Environment(toolchain=gcc_toolchain)
+    gen = project.Program("gen", env, sources=["gen.c"])
+    run = env.Command(
+        name="run",
+        target=project.build_dir / "out.h",
+        tool=gen,
+        source=["in.txt"],
+        command="$TOOL $SOURCE $TARGET",
+        depfile=".d",
+    )
+
+    project.resolve()
+
+    node = run.output_nodes[0]
+    assert gen.output_nodes[0] in node.implicit_deps
+    assert gen.output_nodes[0] not in node.order_only_deps
