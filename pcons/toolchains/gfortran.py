@@ -332,10 +332,13 @@ class GfortranToolchain(UnixToolchain):
             ],
             info_suffix=".fscan.json",
             scan_vars=scan_vars,
-            # A used module may come from a library outside this build
-            # (a system or prebuilt Fortran package), so an unresolved USE
-            # is not an error.
-            on_unresolved="ignore",
+            # A used module may come from a library outside this build (a
+            # system or prebuilt Fortran package), so an unresolved USE is
+            # not an error. It is a warning: the other cause is a sibling
+            # target that provides it with no depends() or link() between
+            # them, which builds in whatever order ninja picks and fails
+            # when the provider comes second.
+            on_unresolved="warn",
         )
         scanner.attach(*targets)
 

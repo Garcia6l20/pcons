@@ -449,7 +449,11 @@ def _plan(manifest: dict[str, Any], build_dir: Path) -> _Plan:
                 elif on_unresolved == "warn":
                     plan.warnings.append(
                         f"{_ERROR_PREFIX} edge '{out}' requires '{name}', "
-                        f"which nothing provides"
+                        f"which nothing in scope '{scope}' or its dependencies "
+                        f"provides. If another target provides it, this "
+                        f"target needs link() or depends() on that target, "
+                        f"which carries its exports here; a module from a "
+                        f"prebuilt library outside the build is fine."
                     )
                 continue
             resolved_requires.append((name, provide.path))

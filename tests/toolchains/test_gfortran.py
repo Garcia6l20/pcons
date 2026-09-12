@@ -423,7 +423,7 @@ class TestScannerWiring:
         manifest = json.loads((tmp_path / "build" / app_scope.manifest_rel).read_text())
 
         assert manifest["imports"] == [lib_scope.exports_rel]
-        assert manifest["on_unresolved"] == "ignore"
+        assert manifest["on_unresolved"] == "warn"
 
     def test_the_module_directory_is_created(
         self, tmp_path, monkeypatch, fortran_toolchain

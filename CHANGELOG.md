@@ -218,9 +218,13 @@ read the whole changelog!
 
   **Module names resolve through declared dependencies.** A target
   sees the modules exported by the targets it links or depends on. A
-  cross-target Fortran `USE` without a `link()` or `add_dependency()`
-  no longer orders the build: the dependency carries the exports, the
-  content decides the order.
+  cross-target Fortran `USE` without a `link()` or `depends()` no longer
+  orders the build: the dependency carries the exports, the content
+  decides the order. The old global scan ordered such a `USE` on its own,
+  so a project that relied on that now builds in whatever order ninja
+  picks and fails when the provider comes second; the Fortran collate
+  warns about a `USE` nothing in reach provides and says which
+  dependency to declare.
 
 - **Fortran module scanning moved onto the same primitive**, gaining per-file
   scans, generated-source support, and `restat` — and `--moddir` now follows
