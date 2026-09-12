@@ -373,6 +373,12 @@ class TestListVars:
 
         assert get_var("TEST_VAR", []) == ["ofx", "ae"]
 
+    def test_a_list_given_to_scoped_vars_comes_back_whole(self, clean_env) -> None:
+        """add_subdirectory(vars={...}) hands a list through the same
+        comma-separated form the command line uses, not its Python repr."""
+        with scoped_vars({"TEST_VAR": ["ofx", "ae"]}):
+            assert get_var("TEST_VAR", ["x"]) == ["ofx", "ae"]
+
     def test_explicit_type_without_default(self, clean_env) -> None:
         assert get_var("TEST_VAR", type=list) is None
 

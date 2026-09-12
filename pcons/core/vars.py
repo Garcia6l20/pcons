@@ -206,6 +206,8 @@ def _spell(name: str, value: VarValue) -> str:
     """
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
     if isinstance(value, _SUPPORTED_TYPES):
         return str(value)
     raise ConfigureError(
