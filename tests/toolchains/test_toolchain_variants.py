@@ -347,6 +347,29 @@ class TestClangClVariants:
         assert crt in env.cxx.flags
         assert len([f for f in env.cxx.flags if f.startswith("/M")]) == 1
 
+    def test_a_variant_replaces_the_default_crt(self, test_project):  # noqa: F811
+        """The compilers start with /MD; a variant's CRT flag takes its place
+        rather than joining it, and switching variants keeps exactly one."""
+        from pcons.toolchains.msvc import MsvcCompiler, MsvcToolchain
+
+        env = Environment()
+        for tool in ("cc", "cxx"):
+            cfg = env.add_tool(tool)
+            cfg.set("cmd", "cl.exe")
+            cfg.set("flags", list(MsvcCompiler().default_vars()["flags"]))
+            cfg.set("defines", [])
+        toolchain = MsvcToolchain()
+        for preset in toolchain.setup_presets(env):
+            env.apply(preset)
+        assert [f for f in env.cxx.flags if f.startswith("/M")] == ["/MD"]
+        assert env.variant == "default"
+
+        toolchain.apply_variant(env, "debug")
+        assert [f for f in env.cxx.flags if f.startswith("/M")] == ["/MDd"]
+
+        toolchain.apply_variant(env, "release")
+        assert [f for f in env.cxx.flags if f.startswith("/M")] == ["/MD"]
+
     @pytest.mark.parametrize("toolchain_name", ["msvc", "clang-cl"])
     @pytest.mark.parametrize(
         ("variant", "has_debug_info"),

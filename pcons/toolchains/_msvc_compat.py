@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pcons.core.preset import ToolContribution
+from pcons.core.preset import Preset, ToolContribution
 from pcons.core.subst import PathToken
 from pcons.tools.toolchain import BaseToolchain
 
@@ -249,6 +249,27 @@ class MsvcCompatibleToolchain(BaseToolchain):
             ToolContribution("link", flags=(flag,)),
             ToolContribution("lib", flags=(flag,)),
         ]
+
+    def setup_presets(self, env: Environment) -> list[Preset]:
+        """The dynamic CRT (/MD) from the start, as the ``default`` variant.
+
+        cl.exe's own default is the static release CRT, which the debug STL
+        cannot link and Conan packages are not built against. It sits in
+        the variant's exclusive group, so ``set_variant()`` replaces it with
+        the variant's own CRT flag the way any knob does, and ``explain()``
+        attributes it by name.
+        """
+        crt = Preset(
+            name="default",
+            category="variant",
+            exclusive_group="build_variant",
+            contributions=tuple(
+                ToolContribution(tool, flags=("/MD",))
+                for tool in ("cc", "cxx")
+                if env.has_tool(tool)
+            ),
+        )
+        return [*super().setup_presets(env), crt]
 
     def _variant_contributions(
         self, variant: str, **kwargs: Any
