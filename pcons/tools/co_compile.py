@@ -35,6 +35,7 @@ import logging
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -49,7 +50,11 @@ SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c++", ".C", ".c", ".m", ".mm")
 #: Flags that must not reach the analyzer, and consume the argument after them.
 DROP_WITH_ARG = ("-o", "-MF", "-MT", "-MQ")
 #: The same, but standing alone.
-DROP_ALONE = ("-c", "-MD", "-MMD", "-MP")
+DROP_ALONE = ("-c", "-MD", "-MMD", "-MP", "/c", "/showIncludes")
+#: MSVC-style flags that carry their argument joined: the outputs.
+DROP_PREFIXED = ("/Fo", "/Fd", "/Fe", "/Fi")
+#: Compilers that take MSVC-style flags; clang-tidy reads them in cl mode.
+CL_COMPILERS = ("cl", "clang-cl")
 
 #: Tools clang-tidy can analyze: the C and C++ compiles.
 ANALYZED_TOOLS = ("cc", "cxx")
@@ -119,8 +124,10 @@ def analyzer_command(
         return None
 
     first_flag = next(
-        i for i, a in enumerate(compile_cmd) if a.startswith("-") or a in sources
+        i for i, a in enumerate(compile_cmd) if a.startswith(("-", "/")) or a in sources
     )
+    compiler = Path(compile_cmd[max(first_flag, 1) - 1]).stem.lower()
+    cl_mode = compiler in CL_COMPILERS
     flags: list[str] = []
     skip = False
     for arg in compile_cmd[max(first_flag, 1) :]:
@@ -130,11 +137,14 @@ def analyzer_command(
         if arg in DROP_WITH_ARG:
             skip = True
             continue
-        if arg in DROP_ALONE or arg in sources:
+        if arg in DROP_ALONE or arg in sources or arg.startswith(DROP_PREFIXED):
             continue
         flags.append(arg)
 
-    return [tidy, *tidy_args, *sources, "--", *flags]
+    # cl.exe's flags mean nothing to clang's GNU driver: clang-tidy parses
+    # the compile line as clang-cl would, which is how CMake does it too.
+    mode = ["--extra-arg-before=--driver-mode=cl"] if cl_mode else []
+    return [tidy, *tidy_args, *mode, *sources, "--", *flags]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -62,6 +62,26 @@ class TestAnalyzerCommand:
         assert "clang++" not in flags
         assert flags == ["-O2"]
 
+    def test_an_msvc_style_compile_is_read_in_cl_mode(self):
+        """cl.exe's flags start with a slash and carry outputs joined on;
+        clang-tidy must parse them as clang-cl would, or it sees no
+        includes and defines at all."""
+        compile_cmd = [
+            "cl.exe",
+            "/nologo",
+            "/showIncludes",
+            "/c",
+            "/Foout.obj",
+            "/Iinc",
+            "/DX=1",
+            "src/a.cc",
+        ]
+        cmd = analyzer_command("ct", [], compile_cmd)
+        assert cmd is not None
+        sep = cmd.index("--")
+        assert cmd[:sep] == ["ct", "--extra-arg-before=--driver-mode=cl", "src/a.cc"]
+        assert cmd[sep + 1 :] == ["/nologo", "/Iinc", "/DX=1"]
+
     def test_no_source_means_nothing_to_analyze(self):
         """A link command carries no source; there is nothing to hand over."""
         assert analyzer_command("ct", [], ["clang++", "-o", "app", "a.o"]) is None
