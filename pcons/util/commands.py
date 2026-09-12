@@ -20,7 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
 
@@ -167,7 +167,7 @@ def copytree(
         item.relative_to(src_path).as_posix() for item in entries if item.is_file()
     }
 
-    for rel in sorted(_staged_before(stamp) - current):
+    for rel in sorted(set(_staged_before(stamp)) - current):
         stale = dest_path / rel
         if stale.is_file() or stale.is_symlink():
             stale.unlink()
@@ -181,7 +181,7 @@ def copytree(
         _write_depfile(depfile, stamp or str(dest_path), [src_path, *entries])
 
     if stamp:
-        _write_stamp(stamp, sorted(current))
+        _write_stamp(stamp, dict.fromkeys(current))
 
 
 def _overlay_excluded(rel_path: Path, patterns: Sequence[str]) -> bool:
@@ -238,22 +238,35 @@ def _overlay_walk(
         )
 
 
-def _staged_before(stamp: str | None) -> set[str]:
-    """The destination-relative paths the previous overlay run wrote."""
+def _staged_before(stamp: str | None) -> dict[str, str | None]:
+    """What the previous overlay run wrote: each destination-relative path
+    and the source file that won it, when the stamp recorded one."""
     if not stamp:
-        return set()
+        return {}
     stamp_path = Path(stamp)
     if not stamp_path.is_file():
-        return set()
-    text = stamp_path.read_text(encoding="utf-8")
-    return {line for line in text.splitlines() if line}
+        return {}
+    staged: dict[str, str | None] = {}
+    for line in stamp_path.read_text(encoding="utf-8").splitlines():
+        if line:
+            rel, sep, source = line.partition("\t")
+            staged[rel] = source if sep else None
+    return staged
 
 
-def _write_stamp(stamp: str, staged: Sequence[str]) -> None:
-    """Write the stamp, holding the destination-relative paths staged."""
+def _write_stamp(stamp: str, staged: Mapping[str, Path | None]) -> None:
+    """Write the stamp: each destination-relative path staged and, when
+    several trees could have won it, the source file that did, so the next
+    run can tell a changed winner apart from an up-to-date copy."""
     stamp_path = Path(stamp)
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    stamp_path.write_text("".join(f"{rel}\n" for rel in staged), encoding="utf-8")
+    stamp_path.write_text(
+        "".join(
+            f"{rel}\n" if source is None else f"{rel}\t{source}\n"
+            for rel, source in sorted(staged.items())
+        ),
+        encoding="utf-8",
+    )
 
 
 def _prune_empty(path: Path, stop: Path) -> None:
@@ -283,10 +296,12 @@ def overlay(
     wrote into a source tree is staged by the build that wrote it, and a file
     added by hand is staged by the build tool alone.
 
-    *stamp* doubles as the record of what was staged: it holds the list of
-    destination-relative paths the previous run produced. That is what lets
-    this run delete the copies that no longer win or no longer exist without
-    touching anything else the destination holds.
+    *stamp* doubles as the record of what was staged: each destination-relative
+    path the previous run produced, and the source that won it. That is what
+    lets this run delete the copies that no longer win or no longer exist
+    without touching anything else the destination holds, and recopy a path
+    whose winner changed even when the new winner is the same size and no
+    newer than the old copy.
 
     Args:
         dest: Destination directory, created if missing.
@@ -315,14 +330,15 @@ def overlay(
 
     dest_path.mkdir(parents=True, exist_ok=True)
 
-    for rel in sorted(_staged_before(stamp) - set(winners)):
+    previous = _staged_before(stamp)
+    for rel in sorted(set(previous) - set(winners)):
         stale = dest_path / rel
         stale.unlink(missing_ok=True)
         _prune_empty(stale, dest_path)
 
     for rel, source_file in sorted(winners.items()):
         target = dest_path / rel
-        if _is_current(source_file, target):
+        if previous.get(rel) == str(source_file) and _is_current(source_file, target):
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_file, target)
@@ -333,7 +349,7 @@ def overlay(
         )
 
     if stamp:
-        _write_stamp(stamp, sorted(winners))
+        _write_stamp(stamp, winners)
 
 
 def run_with_env(args: list[str]) -> int:

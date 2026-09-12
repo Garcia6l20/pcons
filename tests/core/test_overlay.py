@@ -6,6 +6,7 @@ everything here is read back out of the staged directory after a real build.
 Asserting on the target's output nodes would only say what pcons intended.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,28 @@ def run_ninja(root: Path) -> str:
     )
     assert result.returncode == 0, result.stderr or result.stdout
     return result.stdout
+
+
+class TestOverlayCommand:
+    """The build-time command on its own, where the winner of a path changes."""
+
+    def test_a_removed_override_gives_the_path_back(self, tmp_path):
+        """The old winner's copy is the same size as, and newer than, the
+        survivor: only the stamp's record of who won tells them apart."""
+        from pcons.util.commands import overlay
+
+        base = write(tmp_path / "base" / "config.txt", "AAAA")
+        old = base.stat().st_mtime - 100
+        os.utime(base, (old, old))
+        override = write(tmp_path / "over" / "config.txt", "BBBB")
+        dest, stamp = tmp_path / "dest", str(tmp_path / "stamp")
+
+        overlay(str(dest), [str(base.parent), str(override.parent)], stamp=stamp)
+        assert (dest / "config.txt").read_text() == "BBBB"
+
+        shutil.rmtree(override.parent)
+        overlay(str(dest), [str(base.parent)], stamp=stamp)
+        assert (dest / "config.txt").read_text() == "AAAA"
 
 
 class TestOverlayGraph:

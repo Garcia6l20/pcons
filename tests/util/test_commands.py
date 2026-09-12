@@ -385,7 +385,10 @@ class TestOverlay:
 
         overlay(str(dest), [str(shared), str(app)], stamp=str(stamp))
 
-        assert stamp.read_text().split() == ["both.txt", "res/a.txt", "res/b.txt"]
+        # Each line: the staged path, then the source that won it.
+        staged = dict(line.split("\t") for line in stamp.read_text().splitlines())
+        assert list(staged) == ["both.txt", "res/a.txt", "res/b.txt"]
+        assert staged["both.txt"] == str(app / "both.txt")
 
     def test_a_file_that_no_longer_exists_is_removed(self, tmp_path: Path) -> None:
         shared, app, dest = overlay_trees(tmp_path)
@@ -487,7 +490,8 @@ class TestOverlayCommandLine:
 
         assert code == 0
         assert posix(app / "both.txt") in depfile_deps(depfile)
-        assert stamp.read_text().split() == ["both.txt", "res/a.txt", "res/b.txt"]
+        staged = [line.split("\t")[0] for line in stamp.read_text().splitlines()]
+        assert staged == ["both.txt", "res/a.txt", "res/b.txt"]
 
     def test_a_destination_with_no_source_is_a_usage_error(
         self, tmp_path, monkeypatch, capsys
