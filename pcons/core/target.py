@@ -398,11 +398,13 @@ def _looks_like_a_path(name: str) -> bool:
     A name is what ``-l`` takes: no directory separators, no library file
     suffix. ``/opt/vendor/lib/libfoo.a`` fails at link time as
     ``-l/opt/vendor/lib/libfoo.a``, with the mistake pointed at the linker.
+    A bare ``ws2_32.lib`` is a name too: MSVC's linker takes import
+    libraries that way, and its toolchain passes it through as written.
     """
     return (
         "/" in name
         or "\\" in name
-        or name.endswith((".a", ".lib", ".so", ".dylib", ".dll", ".o", ".obj"))
+        or name.endswith((".a", ".so", ".dylib", ".dll", ".o", ".obj"))
     )
 
 
@@ -795,9 +797,9 @@ class Target:
                 raise TypeError(
                     f"{method}() got {lib!r}, which looks like a file path; a "
                     f"string here is a library name, passed to the linker as "
-                    f"-l{lib}. To link a library file by path, put its "
-                    f"directory in link.libdirs and name it, or add the file "
-                    f"itself to link_flags as a PathToken."
+                    f"-l{lib} on GCC and Clang. To link a library file by "
+                    f"path, put its directory in link.libdirs and name it, or "
+                    f"add the file itself to link_flags as a PathToken."
                 )
             if lib is self:
                 raise ValueError(f"Target '{self.name}' cannot link itself.")

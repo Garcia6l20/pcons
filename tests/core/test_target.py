@@ -1182,7 +1182,6 @@ class TestLinkRefusesAPathShapedString:
             "/opt/vendor/lib/libfoo.a",
             "vendor/libfoo.a",
             "libfoo.a",
-            "foo.lib",
             "lib\\foo.lib",
         ],
     )
@@ -1190,6 +1189,12 @@ class TestLinkRefusesAPathShapedString:
         target = Target("app", target_type="program")
         with pytest.raises(TypeError, match="looks like a file path"):
             target.link(bad)
+
+    def test_an_msvc_import_library_is_a_name(self, test_project):  # noqa: F811
+        """MSVC's linker takes system import libraries as ``name.lib``."""
+        target = Target("app", target_type="program")
+        target.link("ws2_32.lib")
+        assert list(target.public.link_libs) == ["ws2_32.lib"]
 
     def test_a_library_name_is_still_a_name(self, test_project):  # noqa: F811
         target = Target("app", target_type="program")
