@@ -1225,13 +1225,22 @@ class Target:
             result.merge(dep.public)
 
     def get_all_languages(self) -> set[str]:
-        """All languages required by this target and its dependencies
-        (e.g. {'c', 'cxx'}); used to pick the linker."""
+        """The languages linked into this target (e.g. {'c', 'cxx'}), which
+        pick the linker: its own, those of the targets whose outputs are its
+        sources, and those of the libraries it links, all the way down. A
+        depends() target is built first but not linked, so it has no say.
+        """
         languages = set(self.required_languages)
         visited: set[str] = {self.qualified_name}
         pending: list[Target] = [self]
         while pending:
-            for dep in pending.pop().dependencies:
+            target = pending.pop()
+            sources = target._pending_sources or ()
+            linked = (
+                *(t for t in sources if isinstance(t, Target)),
+                *target.linked_targets(),
+            )
+            for dep in linked:
                 if dep.qualified_name not in visited:
                     visited.add(dep.qualified_name)
                     languages.update(dep.required_languages)

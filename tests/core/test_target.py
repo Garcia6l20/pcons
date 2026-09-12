@@ -459,6 +459,17 @@ class TestSameShortNameAcrossSubprojects:
         assert "FROM_SUB1" in requirements.defines
         assert "FROM_SUB2" in requirements.defines
 
+    def test_depends_does_not_pick_the_linker(self, test_project):  # noqa: F811
+        """A depends() target is built first but not linked, so a C program
+        that depends() on a C++ tool still links as C."""
+        tool = Target("tool", target_type="program")
+        tool.required_languages.add("cxx")
+        app = Target("app", target_type="program")
+        app.required_languages.add("c")
+        app.depends(tool)
+
+        assert app.get_all_languages() == {"c"}
+
     def test_get_all_languages_union(self, test_project):  # noqa: F811
         util1, util2 = self._make_sub_utils(test_project)
         util1.required_languages.add("c")
