@@ -262,6 +262,15 @@ Worth knowing before porting a large CMake project:
   `<prefix>/mkspecs/qconfig.pri` (`QT.global.enabled_features`) and in
   `<prefix>/include/QtCore/qconfig.h` (`QT_FEATURE_zstd`) if you need to
   check which way it was built.
+- **A source that includes its own `.moc` can lag one ninja run.** A
+  header's `moc_X.cpp` reaches the compiler through
+  `mocs_compilation.cpp`, which automoc bumps whenever moc runs. A
+  self-mocing source has no such file: its `X.moc` is included straight
+  into the source, and ninja does not know that file. When a moc input
+  other than the sources changes (`mocdefines`, `mocflags`, a
+  regenerated `moc_predefs.h`), moc rewrites `X.moc` during the run that
+  already decided which objects to build, so that source is recompiled
+  on the next run instead. Run ninja twice, or touch the source.
 - **Not yet implemented:** qmlcachegen AOT compilation, QML plugin
   libraries / singletons / subdirectory QML files, static-Qt plugin
   imports (`Q_IMPORT_PLUGIN`), per-file resource compression options and
