@@ -213,21 +213,107 @@ class TestTheMocSetTracksTheSources:
         assert not stale.exists()
         assert "moc_thing.cpp" not in aggregator(tmp_path).read_text()
 
-    def test_an_edit_that_keeps_the_set_leaves_the_aggregator_alone(
+    def test_a_rescan_that_runs_no_moc_leaves_the_aggregator_alone(
         self, tmp_path, monkeypatch
     ):
+        """What ``restat`` on the automoc edge is for.
+
+        ``later.h`` carries no Q_OBJECT, so touching it re-runs the edge
+        (the scan read the file) without re-running moc. Nothing moc
+        produced moved, so the aggregator must not move either.
+        """
         build_dir = build_files(self._project(tmp_path, monkeypatch))
         assert run_ninja(build_dir).returncode == 0
+        state = build_dir / "qt.app" / "automoc.state.json"
         before = aggregator(tmp_path).stat().st_mtime_ns
+        before_state = state.stat().st_mtime_ns
 
-        write(
-            tmp_path / "src" / "thing.h",
-            "#pragma once\n#include <QObject>\nclass Thing : public QObject {\n"
-            "    Q_OBJECT\npublic:\n    int extra() const { return 1; }\n};\n",
+        write(tmp_path / "src" / "later.h", "#pragma once\nint later(int n);\n")
+        result = run_ninja(build_dir)
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert state.stat().st_mtime_ns != before_state, "the edge never re-ran"
+        assert aggregator(tmp_path).stat().st_mtime_ns == before
+
+
+MOC_ONLY_HEADER = """\
+#pragma once
+#include <QObject>
+
+class Thing : public QObject {
+    Q_OBJECT
+#ifdef PCONS_EXTRA_SLOT
+public slots:
+    void extra() {}
+#endif
+};
+"""
+
+MOC_ONLY_MAIN = """\
+#include "thing.h"
+#include <cstdio>
+
+int main() {
+    Thing t;
+    std::printf("slot=%d\\n", t.metaObject()->indexOfSlot("extra()") >= 0 ? 1 : 0);
+    return 0;
+}
+"""
+
+
+@needs_qt
+@needs_ninja
+class TestAMocOnlyInputChangeReachesTheObject:
+    """A moc input that is not a source still has to reach the object.
+
+    ``env.qt.mocflags`` goes to moc and nowhere else, so the compile
+    command line is byte-identical across the two builds below: only what
+    moc emits changes. The compiler learns the define from the target's
+    own private requirements, a channel neither ``_moc_inputs`` nor
+    ``moc_predefs.h`` reads, so the first build is the classic AUTOMOC
+    mismatch: a slot the compiler sees and moc does not.
+    """
+
+    @staticmethod
+    def _generate(root: Path, monkeypatch, mocflags: list[str]) -> tuple[Path, Path]:
+        import pcons
+        from pcons.toolchains import find_c_toolchain
+        from pcons.toolchains.qt import find_qt
+
+        monkeypatch.chdir(root)
+        pcons._clear_registered_projects()
+        project = Project("automoc", root_dir=root, build_dir=root / "build")
+        env = project.Environment(toolchain=find_c_toolchain())
+        env.cxx.set_standard(17)
+        qt = find_qt(project, env, modules=["Core"])
+        env.qt.mocflags = list(mocflags)
+        app = project.QtProgram("app", env, sources=["src/main.cpp"], link=[qt.Core])
+        app.private.defines.append("PCONS_EXTRA_SLOT")
+        project.resolve()
+        return build_files(project), root / app.output_nodes[0].path
+
+    def _run(self, program: Path) -> str:
+        return subprocess.run(
+            [str(program)], capture_output=True, text=True, check=True
+        ).stdout
+
+    def test_a_changed_mocflag_reaches_the_object_in_one_run(
+        self, tmp_path, monkeypatch
+    ):
+        write(tmp_path / "src" / "thing.h", MOC_ONLY_HEADER)
+        write(tmp_path / "src" / "main.cpp", MOC_ONLY_MAIN)
+
+        build_dir, program = self._generate(tmp_path, monkeypatch, [])
+        result = run_ninja(build_dir)
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "slot=0" in self._run(program)
+
+        build_dir, program = self._generate(
+            tmp_path, monkeypatch, ["-DPCONS_EXTRA_SLOT"]
         )
         result = run_ninja(build_dir)
         assert result.returncode == 0, result.stderr or result.stdout
-        assert aggregator(tmp_path).stat().st_mtime_ns == before
+        assert "slot=1" in self._run(program), "moc ran but its output stayed behind"
+        assert "no work to do" in run_ninja(build_dir).stdout
 
 
 CHILD_BUILD_SCRIPT = """\

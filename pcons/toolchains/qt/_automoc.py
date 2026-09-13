@@ -93,6 +93,25 @@ def _write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def _write_aggregator(path: Path, content: str, moc_ran: bool) -> None:
+    """Write the aggregator TU, unconditionally when moc produced anything.
+
+    The edge is ``restat``, so leaving an unchanged aggregator alone keeps
+    ninja from recompiling it. That is right when the edge only re-scanned.
+    It is wrong when moc re-ran: moc's inputs other than the sources (the
+    spec's flags and defines, ``moc_predefs.h``) can change every
+    ``moc_X.cpp`` while the aggregator stays byte-identical, and ninja
+    cleans the dependents of a restat output against the mtimes it cached
+    before the edge ran, so it never sees the new ``moc_X.cpp``. Bumping
+    the aggregator forces the one recompile that carries them.
+    """
+    if moc_ran:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return
+    _write_if_changed(path, content)
+
+
 def _mtime(path: Path) -> int:
     try:
         return path.stat().st_mtime_ns
@@ -234,11 +253,13 @@ def main(argv: list[str] | None = None) -> int:
         *(_mtime(Path(p)) for p in spec["moc_deps"]),
         0,
     )
+    moc_ran = False
     for output, source in jobs:
         if _needs_moc(output, source, floor):
             code = _run_moc(moc, moc_args, output, source)
             if code != 0:
                 return code
+            moc_ran = True
 
     produced = sorted(str(output) for output, _ in jobs)
     state_path = gen_dir / "automoc.state.json"
@@ -254,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         for output, _ in header_jobs
     )
     body = "".join(f'#include "{name}"\n' for name in includes) or _EMPTY_TU
-    _write_if_changed(aggregator, body)
+    _write_aggregator(aggregator, body, moc_ran)
 
     metatypes = spec.get("metatypes")
     if metatypes is not None:
